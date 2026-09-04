@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<title>Grace - evaluation report</title>
+<style>
+:root{--bg:#fbfaf8;--fg:#1b1b1a;--mut:#6b6b66;--line:#e3e0d9;--card:#fff;--warn:#8a2b0c;--warnbg:#fdf1ec;--ok:#1f6f43;--accent:#2b4c7e}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif}
+.wrap{max-width:1080px;margin:0 auto;padding:32px 20px 80px}
+h1{font-size:26px;margin:0 0 4px} h2{font-size:18px;margin:36px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+h3{font-size:14px;margin:20px 0 8px;color:var(--mut);text-transform:uppercase;letter-spacing:.05em}
+.sub{color:var(--mut);margin:0 0 20px}
+.banner{border:1px solid #e6bfae;background:var(--warnbg);color:var(--warn);padding:12px 14px;border-radius:8px;margin:14px 0;font-size:13.5px}
+.banner b{display:block;margin-bottom:3px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:16px;margin:12px 0}
+table{border-collapse:collapse;width:100%;font-size:13.5px}
+th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;color:var(--mut);font-size:12px;text-transform:uppercase;letter-spacing:.04em}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.scroll{overflow-x:auto}
+code,.mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12.5px}
+.pill{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11.5px;border:1px solid var(--line);background:#f6f4f0;margin-right:4px}
+.pill.flag{background:#fdf1ec;border-color:#e6bfae;color:var(--warn)}
+.best{font-weight:650;color:var(--ok)}
+.muted{color:var(--mut)}
+.small{font-size:12.5px}
+footer{margin-top:44px;color:var(--mut);font-size:12.5px;border-top:1px solid var(--line);padding-top:14px}
+</style></head><body><div class="wrap">
+
+<h1>Grace - evaluation report</h1>
+<p class="sub">The missing middle state for Indian auto-debit. Holdout results on a synthetic cohort.</p>
+
+<div class="banner">
+  <b>Synthetic data</b>
+  {{ honesty.cohort }}
+</div>
+{% if honesty.bank_health_is_synthetic %}
+<div class="banner">
+  <b>Bank-health feed is NOT NPCI data</b>
+  Provenance: <code>{{ honesty.bank_health_provenance }}</code>.
+  NPCI publishes real per-bank BD/TD and uptime monthly; this build could not fetch it, so the
+  figures are invented and shaped like it. No number here may be attributed to NPCI.
+</div>
+{% endif %}
+{% if honesty.agent_column %}
+<div class="banner">
+  <b>Agent column ran the offline stub, not Claude</b>
+  {{ honesty.agent_column }}
+</div>
+{% endif %}
+<div class="banner">
+  <b>How outcomes are scored</b>
+  {{ honesty.outcome_model }}
+</div>
+
+<h2>Results</h2>
+<div class="card scroll">
+<table>
+  <tr><th>Metric</th>{% for a in arm_names %}<th class="n">{{ a }}</th>{% endfor %}</tr>
+  {% for label, key, fmt in metric_rows %}
+  <tr><td>{{ label }}</td>
+    {% for a in arm_names %}
+      {% set v = arms[a].get(key) %}
+      <td class="n">
+      {%- if fmt == 'inr' %}{{ v|inr }}{% elif fmt == 'pct' %}{{ v|pct }}{% elif fmt == 'f4' %}{{ v|f4 }}{% else %}{{ v|num }}{% endif -%}
+      </td>
+    {% endfor %}
+  </tr>
+  {% endfor %}
+</table>
+</div>
+
+{% if comparison %}
+<h3>Lift over the do-nothing arm</h3>
+<div class="card scroll">
+<table>
+  <tr><th>Arm</th><th class="n">Mandates preserved</th><th class="n">Rupees preserved</th>
+      <th class="n">False-intervention cost</th><th class="n">Net</th></tr>
+  {% for arm, c in comparison.items() %}
+  <tr><td>{{ arm }}</td>
+      <td class="n">{{ c.mandates_preserved_lift|num }}</td>
+      <td class="n">{{ c.rupees_preserved_lift_paise|inr }}</td>
+      <td class="n">{{ c.false_intervention_cost_paise|inr }}</td>
+      <td class="n {% if c.net_rupees_paise > 0 %}best{% endif %}">{{ c.net_rupees_paise|inr }}</td></tr>
+  {% endfor %}
+</table>
+<p class="small muted">Net = rupees preserved above the do-nothing arm, minus the revenue put at
+risk by intervening on mandates that were healthy. Both terms come from the counterfactual table
+below, not from observed payments.</p>
+</div>
+{% endif %}
+
+<h2>Gate overrides</h2>
+<p class="small muted">Every action the model or the baseline proposed that policy refused. The
+model proposes; code disposes. Nothing here is silent.</p>
+<div class="card scroll">
+<table>
+  <tr><th>Flag</th>{% for a in arm_names %}<th class="n">{{ a }}</th>{% endfor %}</tr>
+  {% set allflags = [] %}
+  {% for a in arm_names %}{% for f in arms[a].gate_flags %}{% if f not in allflags %}{% set _ = allflags.append(f) %}{% endif %}{% endfor %}{% endfor %}
+  {% for f in allflags %}
+  <tr><td><span class="pill flag">{{ f }}</span></td>
+    {% for a in arm_names %}<td class="n">{{ arms[a].gate_flags.get(f, 0) }}</td>{% endfor %}</tr>
+  {% endfor %}
+  {% if not allflags %}<tr><td colspan="{{ arm_names|length + 1 }}" class="muted">No overrides.</td></tr>{% endif %}
+</table>
+</div>
+
+<h2>Integrity</h2>
+<div class="card scroll">
+<table>
+  <tr><th>Measure</th>{% for a in arm_names %}<th class="n">{{ a }}</th>{% endfor %}</tr>
+  <tr><td>Guard enabled</td>{% for a in arm_names %}<td class="n">{{ arms[a].batch.guard_enabled }}</td>{% endfor %}</tr>
+  <tr><td>Guard blocks</td>{% for a in arm_names %}<td class="n">{{ arms[a].batch.get('guard_blocks', 0) }}</td>{% endfor %}</tr>
+  <tr><td>Double debits prevented</td>{% for a in arm_names %}<td class="n">{{ arms[a].batch.double_debits_prevented }}</td>{% endfor %}</tr>
+  <tr><td><b>Double debits DETECTED</b></td>{% for a in arm_names %}<td class="n">{{ arms[a].batch.double_debits_detected }}</td>{% endfor %}</tr>
+</table>
+<p class="small muted">A double debit is a compliance incident, not a missed optimisation. Grace
+never auto-refunds one: it opens a ticket in the audit trail and escalates. Re-run with
+<code>--no-guard</code> to see the same batch without the guard.</p>
+</div>
+
+<h2>Predictor (holdout)</h2>
+<div class="card">
+{% if predictor %}
+<p class="small">Brier {{ predictor.holdout.brier }} on {{ predictor.holdout.n }} held-out mandates
+({{ predictor.holdout.positives }} at risk). {{ predictor.note }}</p>
+<div class="scroll"><table>
+<tr><th>Predicted band</th><th class="n">n</th><th class="n">mean predicted</th><th class="n">actual</th></tr>
+{% for r in predictor.holdout.calibration %}
+<tr><td>{{ r.bin }}</td><td class="n">{{ r.n }}</td><td class="n">{{ r.predicted if r.predicted is not none else '-' }}</td><td class="n">{{ r.actual if r.actual is not none else '-' }}</td></tr>
+{% endfor %}
+</table></div>
+<h3>Largest weights</h3>
+<p class="small mono">{% for w in predictor.top_weights %}{{ w.feature }}={{ w.weight }}{% if not loop.last %} &middot; {% endif %}{% endfor %}</p>
+{% else %}<p class="muted">No predictor stats.</p>{% endif %}
+</div>
+
+<h2>What we got wrong</h2>
+<p class="small muted">The ten highest-regret decisions in the agent arm, with the reasoning that
+produced them. Regret = best available survival probability minus the one we chose.</p>
+<div class="card scroll">
+<table>
+  <tr><th>Mandate</th><th>Rail/status</th><th class="n">Regret</th><th>True cause</th><th>Guessed</th><th>Action</th><th>Rationale</th></tr>
+  {% for r in worst %}
+  <tr><td class="mono">{{ r.mandate_id }}</td><td class="small">{{ r.rail }}/{{ r.status }}</td>
+      <td class="n">{{ r.regret }}</td><td class="small">{{ r.true_cause }}</td>
+      <td class="small">{{ r.guessed_cause }}</td>
+      <td class="small">{{ r.final_action }}{% if r.proposed_action != r.final_action %}<br><span class="pill flag">from {{ r.proposed_action }}</span>{% endif %}</td>
+      <td class="small">{{ r.rationale }}</td></tr>
+  {% endfor %}
+  {% if not worst %}<tr><td colspan="7" class="muted">No adjudicated decisions.</td></tr>{% endif %}
+</table>
+</div>
+
+<h2>Largest actions taken</h2>
+<div class="card scroll">
+<table>
+  <tr><th>Mandate</th><th>Rail</th><th>Action</th><th>Cause</th><th class="n">At stake</th><th>Rationale</th></tr>
+  {% for r in top_stake %}
+  <tr><td class="mono">{{ r.mandate_id }}</td><td class="small">{{ r.rail }}</td>
+      <td class="small">{{ r.final_action }}</td><td class="small">{{ r.cause }}</td>
+      <td class="n">{{ r.stake|inr }}</td><td class="small">{{ r.rationale }}</td></tr>
+  {% endfor %}
+  {% if not top_stake %}<tr><td colspan="6" class="muted">No interventions.</td></tr>{% endif %}
+</table>
+</div>
+
+<h2>Cohort generator</h2>
+<div class="card">
+<p class="small">Seed <code>{{ manifest.seed }}</code> &middot; n={{ manifest.n }} &middot;
+decision date {{ manifest.decision_date }} &middot; {{ manifest.history_months }} months of history &middot;
+holdout {{ manifest.holdout_fraction }} via <code>{{ manifest.holdout_selector }}</code></p>
+<p class="small muted">{{ manifest.payment_fail_rate_source }}</p>
+<p class="small muted">{{ manifest.liquidity_timing_note }}</p>
+<p class="small muted">{{ manifest.history_note }}</p>
+<h3>Counterfactual survival table</h3>
+<p class="small muted">P(mandate survives the next two cycles) under each action, by true cause.
+This is the causal model the whole evaluation rests on. It is an assumption; disagree with it here.
+{{ manifest.counterfactual_noise }}</p>
+<div class="scroll"><table>
+<tr><th>True cause</th>{% for k in ['noop','pause','manual_charge','cancel_at_cycle_end','step_down_plan','request_reauth'] %}<th class="n">{{ k }}</th>{% endfor %}</tr>
+{% for cause, row in manifest.counterfactuals.items() %}
+<tr><td class="small">{{ cause }}</td>
+{% for k in ['noop','pause','manual_charge','cancel_at_cycle_end','step_down_plan','request_reauth'] %}
+<td class="n {% if row[k] == row.values()|max %}best{% endif %}">{{ row[k] }}</td>{% endfor %}</tr>
+{% endfor %}
+<tr><td class="small">healthy (not at risk)</td>
+{% for k in ['noop','pause','manual_charge','cancel_at_cycle_end','step_down_plan','request_reauth'] %}
+<td class="n">{{ manifest.healthy_counterfactual[k] }}</td>{% endfor %}</tr>
+</table></div>
+<h3>Realised counts</h3>
+<p class="small mono">{{ manifest.realised_counts }}</p>
+</div>
+
+<footer>
+Grace &middot; Razorpay AI Buildathon, Track 03 (AI Revenue Recovery).
+Synthetic cohort; holdout-only metrics; rules baseline reported alongside the agent.
+Bank-health provenance: <code>{{ honesty.bank_health_provenance }}</code>.
+</footer>
+</div></body></html>

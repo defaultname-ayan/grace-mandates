@@ -1,0 +1,66 @@
+{
+  "entity": "event",
+  "account_id": "acc_FIXTURE",
+  "event": "subscription.charged",
+  "contains": [
+    "subscription",
+    "payment"
+  ],
+  "payload": {
+    "subscription": {
+      "entity": {
+        "id": "sub_FIXTURE0001",
+        "entity": "subscription",
+        "plan_id": "plan__FIXTURE0001",
+        "customer_id": "cust_FIXTURE01",
+        "status": "active",
+        "type": 1,
+        "current_start": null,
+        "current_end": null,
+        "ended_at": null,
+        "quantity": 1,
+        "notes": {
+          "grace_rail": "card"
+        },
+        "charge_at": null,
+        "start_at": null,
+        "end_at": null,
+        "auth_attempts": 0,
+        "total_count": 12,
+        "paid_count": 1,
+        "customer_notify": true,
+        "created_at": null,
+        "expire_by": null,
+        "short_url": null,
+        "has_scheduled_changes": false,
+        "change_scheduled_at": null,
+        "source": "api",
+        "offer_id": null,
+        "payment_method": "card",
+        "remaining_count": 11,
+        "pause_initiated_by": null,
+        "cancel_initiated_by": null,
+        "paused_at": null
+      }
+    },
+    "payment": {
+      "entity": {
+        "id": "pay_02300541163861",
+        "entity": "payment",
+        "amount": 49900,
+        "currency": "INR",
+        "status": "captured",
+        "invoice_id": "inv_96822808768954",
+        "method": "card",
+        "description": "Recurring Payment via Subscription",
+        "customer_id": "cust_FIXTURE01",
+        "error_code": null,
+        "error_description": null,
+        "error_source": null,
+        "error_step": null,
+        "created_at": 1788523200
+      }
+    }
+  },
+  "created_at": 1788523200
+}

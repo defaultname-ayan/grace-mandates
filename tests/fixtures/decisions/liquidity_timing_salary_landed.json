@@ -1,0 +1,55 @@
+{
+  "case": "liquidity_timing_salary_landed",
+  "evidence_hash": "bbd4fb74b3c6dc1a",
+  "evidence": {
+    "allowed_actions": [
+      "escalate",
+      "manual_charge",
+      "noop",
+      "request_reauth"
+    ],
+    "cancel_intent_text": null,
+    "customer": {
+      "bank": "HDFC Bank",
+      "ltv_band": "mid",
+      "salary_day": 10,
+      "salary_day_was_inferred": false,
+      "tenure_months": 12
+    },
+    "mandate": {
+      "amount_inr": 499.0,
+      "auth_attempts": 4,
+      "cycle_day": 5,
+      "emandate_attempt_in_flight": false,
+      "id": "simsub_a1",
+      "interventions_this_cycle": 0,
+      "interventions_total": 0,
+      "last_error_reason": "insufficient_funds",
+      "last_error_source": null,
+      "paid_count": 6,
+      "pause_initiated_by": null,
+      "rail": "card",
+      "status": "halted",
+      "total_count": 12
+    },
+    "recent_events": [],
+    "signals": {
+      "bank_health": {
+        "bd_pct": 9.1,
+        "td_pct": 0.42,
+        "uptime_pct": 99.6
+      },
+      "bank_in_downtime_now": false,
+      "charge_day_is_bank_holiday": false,
+      "days_to_salary": 0,
+      "p_fail_next_cycle": 0.2,
+      "prior_fail_count_6m": 0,
+      "prior_fail_streak": 0
+    }
+  },
+  "expected": {
+    "cause": "liquidity_timing",
+    "action": "manual_charge",
+    "rationale": "Insufficient funds, but the salary credit has already landed. Charging the open invoice now is the cheapest recovery available on this rail."
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "_provenance": "Indicative NATIONAL bank-holiday list for 2026, hand-entered. Indian bank holidays vary substantially BY STATE under the Negotiable Instruments Act; this list is national-only and is used solely for date arithmetic in a synthetic demo. Do not use for production scheduling.",
+  "_weekly_rule": "Indian banks are also closed every Sunday and on the 2nd and 4th Saturday of each month. That rule is applied programmatically in grace/signals/holidays.py, not listed here.",
+  "dates": [
+    {"date": "2026-01-26", "name": "Republic Day"},
+    {"date": "2026-03-04", "name": "Holi (indicative)"},
+    {"date": "2026-04-01", "name": "Bank annual closing"},
+    {"date": "2026-04-14", "name": "Dr Ambedkar Jayanti"},
+    {"date": "2026-05-01", "name": "May Day (indicative, state-varying)"},
+    {"date": "2026-08-15", "name": "Independence Day"},
+    {"date": "2026-10-02", "name": "Gandhi Jayanti"},
+    {"date": "2026-12-25", "name": "Christmas"}
+  ]
+}
