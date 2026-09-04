@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import Enum
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -96,13 +96,16 @@ ACTION_TO_CF_KEY = {
     Action.REQUEST_REAUTH: "request_reauth",
 }
 
+#: Cycles of plan revenue counted as "at stake" when scoring preservation.
+STAKE_HORIZON_CYCLES = 3
+
 CF_KEYS = ["noop", "pause", "manual_charge", "cancel_at_cycle_end", "step_down_plan", "request_reauth"]
 
 
 class Customer(BaseModel):
     id: str
     bank: str
-    salary_day: Optional[int] = None
+    salary_day: int | None = None
     tenure_months: int = 0
     ltv_band: Literal["low", "mid", "high"] = "mid"
     travel_flag: bool = False
@@ -120,11 +123,11 @@ class Mandate(BaseModel):
     auth_attempts: int = 0
     paid_count: int = 0
     total_count: int = 12
-    charge_at: Optional[datetime] = None
-    pause_initiated_by: Optional[str] = None
-    paused_at: Optional[datetime] = None
-    last_error_reason: Optional[str] = None
-    last_error_source: Optional[str] = None
+    charge_at: datetime | None = None
+    pause_initiated_by: str | None = None
+    paused_at: datetime | None = None
+    last_error_reason: str | None = None
+    last_error_source: str | None = None
     interventions_this_cycle: int = 0
     interventions_total: int = 0
 
@@ -137,6 +140,16 @@ class Mandate(BaseModel):
     def remaining_count(self) -> int:
         return max(0, self.total_count - self.paid_count)
 
+    @property
+    def rupees_at_stake(self) -> int:
+        """Revenue this mandate represents over the scoring horizon, in paise.
+
+        One definition for the audit trail, the decision record, the scorer and
+        the threshold tuner. It was written out four times before; the horizon
+        is a modelling assumption and must not drift between them.
+        """
+        return self.plan_amount_paise * min(STAKE_HORIZON_CYCLES, self.remaining_count)
+
 
 class Invoice(BaseModel):
     id: str
@@ -146,7 +159,7 @@ class Invoice(BaseModel):
     status: Literal["issued", "paid", "failed"] = "issued"
     attempt_in_flight: bool = False
     attempts: int = 0
-    issued_at: Optional[datetime] = None
+    issued_at: datetime | None = None
 
     @field_validator("issued_at")
     @classmethod
@@ -196,10 +209,10 @@ class Truth(BaseModel):
     #: whose payment would have gone through fine.
     payment_will_fail: bool = False
     at_risk_reason: Literal["payment_failure", "cancel_intent", "none"] = "none"
-    raw_reason: Optional[str] = None
+    raw_reason: str | None = None
     cause: Cause = Cause.UNKNOWN
     cancel_intent: Literal["temporary", "price", "done", "none"] = "none"
-    cancel_intent_text: Optional[str] = None
+    cancel_intent_text: str | None = None
     survival_under: dict[str, float] = Field(default_factory=dict)
 
 
@@ -208,10 +221,10 @@ class Evidence(BaseModel):
     customer: Customer
     recent_events: list[Event] = Field(default_factory=list)
     bank_health: dict[str, Any] = Field(default_factory=dict)
-    days_to_salary: Optional[int] = None
+    days_to_salary: int | None = None
     is_bank_holiday_on_charge_day: bool = False
     in_downtime: bool = False
-    cancel_intent_text: Optional[str] = None
+    cancel_intent_text: str | None = None
     allowed_actions: list[Action] = Field(default_factory=list)
     p_fail: float = 0.0
     salary_day_inferred: bool = False

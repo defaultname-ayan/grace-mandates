@@ -6,6 +6,8 @@ all arms. Arms therefore differ only by the action they chose, never by luck.
 """
 from __future__ import annotations
 
+from collections import Counter
+
 from grace.models import ACTION_TO_CF_KEY, CF_KEYS, INTERVENTIONS, Action
 from grace.store import Store
 from grace.util import stable_unit
@@ -25,10 +27,6 @@ def survived(truth, action: Action, mandate_id: str) -> bool:
     return outcome_draw(mandate_id) < p
 
 
-def _rupees(m) -> int:
-    return m.plan_amount_paise * min(3, m.remaining_count)
-
-
 def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
                  only_ids: set[str] | None = None) -> dict:
     decisions = store.decisions_for_arm(arm)
@@ -43,8 +41,8 @@ def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
     fi_cost = 0
     out_of_policy = fallbacks = 0
     intent_total = intent_converted = 0
-    flag_counts: dict[str, int] = {}
-    action_counts: dict[str, int] = {}
+    flag_counts: Counter[str] = Counter()
+    action_counts: Counter[str] = Counter()
     survived_rupees = 0
 
     for mid, d in decisions.items():
@@ -56,11 +54,11 @@ def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
             continue
         n += 1
         final = Action(d["final_action"])
-        action_counts[final.value] = action_counts.get(final.value, 0) + 1
-        rup = d.get("rupees_at_stake") or _rupees(m)
+        action_counts[final.value] += 1
+        rup = d.get("rupees_at_stake") or m.rupees_at_stake
 
-        for k in d.get("gate_flags", {}):
-            flag_counts[k] = flag_counts.get(k, 0) + 1
+        # keys only: Counter.update(dict) would treat the reason STRINGS as counts
+        flag_counts.update((d.get("gate_flags") or {}).keys())
         if "model_out_of_policy" in d.get("gate_flags", {}):
             out_of_policy += 1
         if d.get("trigger") != "tick":
@@ -70,7 +68,7 @@ def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
                 cause_hits += int(d["cause"] == t.cause.value)
         if final == Action.ESCALATE:
             escalations += 1
-        if "adjudicator unavailable" in (d.get("rationale") or ""):
+        if d.get("fallback"):
             fallbacks += 1
 
         alive = survived(t, final, mid)
@@ -131,8 +129,8 @@ def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
         "intent_total": intent_total,
         "intent_converted": intent_converted,
         "intent_conversion_rate": pct(intent_converted, intent_total),
-        "gate_flags": flag_counts,
-        "actions": action_counts,
+        "gate_flags": dict(flag_counts),
+        "actions": dict(action_counts),
     }
 
 

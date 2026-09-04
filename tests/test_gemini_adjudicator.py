@@ -219,15 +219,35 @@ def test_server_error_is_retried_then_succeeds(monkeypatch):
     assert d.action == Action.PAUSE and len(calls) == 3 and meta["attempt"] == 2
 
 
-def test_rate_limit_is_retried(monkeypatch):
+def test_rate_limit_moves_to_the_next_model_without_sleeping(monkeypatch):
+    """A daily quota does not recover in seconds; when another model exists,
+    a 429 must fall through immediately and put the model into cooldown."""
+    slept: list[float] = []
+    monkeypatch.setattr("time.sleep", lambda s: slept.append(s))
+
+    def behaviour(n, kw):
+        if kw["model"] == "gemini-3.8-flash":
+            raise sys.modules["google.genai.errors"].ClientError("429 quota", 429)
+        return FakeResp()
+
+    adj, calls, _ = make(monkeypatch, behaviour)
+    d, meta = adj.adjudicate(sample_evidence())
+    assert len(calls) == 2 and meta["model"] == "gemini-3.7-flash"
+    assert slept == [], "no backoff on a quota error when a fallback exists"
+    assert adj._cooldown_until.get("gemini-3.8-flash", 0) > 0
+    adj.adjudicate(sample_evidence())
+    assert calls[-1]["model"] == "gemini-3.7-flash", "cooled-down model must be skipped"
+
+
+def test_rate_limit_on_the_last_model_is_retried(monkeypatch):
     def behaviour(n, kw):
         if n < 2:
             raise sys.modules["google.genai.errors"].ClientError("429 quota", 429)
         return FakeResp()
 
-    adj, calls, _ = make(monkeypatch, behaviour)
+    adj, calls, _ = make(monkeypatch, behaviour, model="gemini-3.5-flash-lite", pin=True)
     adj.adjudicate(sample_evidence())
-    assert len(calls) == 2
+    assert len(calls) == 2 and len(adj.model_chain) == 1
 
 
 def test_client_error_other_than_429_is_not_retried_within_a_model(monkeypatch):
@@ -366,3 +386,26 @@ def test_successful_first_model_records_zero_fallback_depth(monkeypatch):
     adj, _, _ = make(monkeypatch, lambda n, kw: FakeResp())
     _, meta = adj.adjudicate(sample_evidence())
     assert meta["fallback_depth"] == 0 and meta["model"] == meta["requested_model"]
+
+
+def test_pinned_model_has_no_fallback_chain(monkeypatch):
+    """`--model X` must mean X: a failing pinned model reported as a failure,
+    never quietly served by the default chain."""
+    from grace.adjudicate import make_llm_adjudicator
+    from grace.adjudicate.gemini import AdjudicationError
+
+    install_fake_genai(monkeypatch, lambda n, kw: (_ for _ in ()).throw(
+        sys.modules["google.genai.errors"].ServerError("503", 503)))
+    adj = make_llm_adjudicator("gemini", model="gemini-2.5-flash")
+    assert adj.model_chain == ["gemini-2.5-flash"]
+    with pytest.raises(AdjudicationError):
+        adj.adjudicate(sample_evidence())
+
+
+def test_both_providers_share_one_error_type():
+    from grace.adjudicate import claude, gemini
+    from grace.adjudicate.base import AdjudicationError
+
+    assert claude.AdjudicationError is AdjudicationError
+    assert gemini.AdjudicationError is AdjudicationError
+    assert issubclass(gemini.GeminiRefusal, AdjudicationError)

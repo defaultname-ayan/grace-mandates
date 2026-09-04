@@ -14,7 +14,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from pathlib import Path
 
-DATA = Path(__file__).resolve().parents[2] / "data" / "holidays_2026.json"
+DATA = Path(__file__).resolve().parents[1] / "data" / "holidays_2026.json"
 
 
 def _nth_weekday_of_month(d: date) -> int:
@@ -38,9 +38,7 @@ class HolidayCalendar:
             return True
         if d.weekday() == 6:  # Sunday
             return True
-        if d.weekday() == 5 and _nth_weekday_of_month(d) in (2, 4):  # 2nd/4th Saturday
-            return True
-        return False
+        return d.weekday() == 5 and _nth_weekday_of_month(d) in (2, 4)  # 2nd/4th Saturday
 
     def reason(self, d: date) -> str | None:
         if d in self._fixed:

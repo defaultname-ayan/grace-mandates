@@ -21,7 +21,10 @@ router = APIRouter()
 
 def verify(raw: bytes, signature: str, secret: str) -> bool:
     expected = hmac.new(secret.encode(), raw, hashlib.sha256).hexdigest()
-    return hmac.compare_digest(expected, signature or "")
+    try:
+        return hmac.compare_digest(expected, signature or "")
+    except TypeError:  # non-ASCII header: definitely not our hex digest
+        return False
 
 
 def event_from_payload(body: dict, raw: bytes, event_id: str | None = None) -> Event:
@@ -49,10 +52,15 @@ async def razorpay_webhook(request: Request):
     if not verify(raw, sig, secret):
         raise HTTPException(status_code=400, detail="bad signature")
 
-    body = json.loads(raw)
+    try:
+        body = json.loads(raw)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="body is not JSON") from None
     ev = event_from_payload(body, raw, request.headers.get("x-razorpay-event-id"))
 
-    store = request.app.state.store
+    store = getattr(request.app.state, "store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="no run loaded; run `grace seed` first")
     inserted = store.append_event(ev)
     if inserted:
         guard = request.app.state.guard

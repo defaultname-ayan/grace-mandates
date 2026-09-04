@@ -48,9 +48,16 @@ class IntegrityGuard:
 
         if self.store.is_locked(invoice.id):
             return self._block(m, invoice, "another action is already in progress on this invoice")
-
-        self.store.lock(invoice.id, LOCK_TTL)
         return True, "ok"
+
+    def acquire(self, invoice_id: str) -> bool:
+        """Take the invoice lock. Called by whoever is about to execute, not by
+        the check: a check that locked as a side effect left the invoice locked
+        for 72h whenever a later gate step denied the action."""
+        return self.store.lock(invoice_id, LOCK_TTL)
+
+    def release(self, invoice_id: str) -> None:
+        self.store.unlock(invoice_id)
 
     def check_resume(self, m: Mandate) -> tuple[bool, str]:
         if not self.enabled:

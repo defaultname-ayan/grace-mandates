@@ -43,7 +43,7 @@ class LogisticRisk:
         lr: float = 0.35,
         l2: float = 1e-3,
         class_weight: bool = False,
-    ) -> "LogisticRisk":
+    ) -> LogisticRisk:
         """Unweighted by default.
 
         Class weighting improves ranking on an imbalanced cohort but pushes
@@ -103,7 +103,7 @@ class LogisticRisk:
         return sigmoid(z)
 
     def top_weights(self, k: int = 8) -> list[tuple[str, float]]:
-        return sorted(zip(self.names, self.w), key=lambda t: -abs(t[1]))[:k]
+        return sorted(zip(self.names, self.w, strict=True), key=lambda t: -abs(t[1]))[:k]
 
     # ------------------------------------------------------------ persistence
     def to_dict(self) -> dict:
@@ -117,7 +117,7 @@ class LogisticRisk:
         Path(path).write_text(json.dumps(self.to_dict(), indent=2))
 
     @classmethod
-    def load(cls, path: str | Path) -> "LogisticRisk":
+    def load(cls, path: str | Path) -> LogisticRisk:
         raw = json.loads(Path(path).read_text())
         m = cls(raw["names"])
         m.w, m.b, m.mu, m.sd = raw["w"], raw["b"], raw["mu"], raw["sd"]
@@ -130,7 +130,7 @@ class LogisticRisk:
 def brier(probs: Sequence[float], labels: Sequence[int]) -> float:
     if not probs:
         return 0.0
-    return sum((p - y) ** 2 for p, y in zip(probs, labels)) / len(probs)
+    return sum((p - y) ** 2 for p, y in zip(probs, labels, strict=True)) / len(probs)
 
 
 def calibration_table(probs: Sequence[float], labels: Sequence[int], bins: int = 5) -> list[dict]:

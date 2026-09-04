@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 from grace.models import Customer, Event, Invoice, Mandate, Truth
-from grace.util import ensure_aware, from_iso, to_iso, utcnow
+from grace.util import ensure_aware, from_iso, parse_iso, to_iso, utcnow
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS customers (
@@ -126,7 +126,7 @@ class Store:
         with self._lock:
             self._conn.close()
 
-    def __enter__(self) -> "Store":
+    def __enter__(self) -> Store:
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -278,7 +278,7 @@ class Store:
     def _row_to_event(r: sqlite3.Row) -> Event:
         return Event(
             id=r["id"], mandate_id=r["mandate_id"], name=r["name"],
-            at=from_iso(r["at"]), payload=json.loads(r["payload"]), processed=bool(r["processed"]),
+            at=parse_iso(r["at"]), payload=json.loads(r["payload"]), processed=bool(r["processed"]),
         )
 
     # ----------------------------------------------------------- decisions
@@ -322,7 +322,7 @@ class Store:
                  json.dumps(rec, default=str)),
             )
             self._commit()
-            return int(cur.lastrowid)
+            return int(cur.lastrowid or 0)
 
     def audit_for(self, mandate_id: str) -> list[dict]:
         with self._lock:

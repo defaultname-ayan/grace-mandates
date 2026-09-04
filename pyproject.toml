@@ -17,7 +17,7 @@ dependencies = [
 [project.optional-dependencies]
 llm  = ["google-genai>=2.0"]                     # default provider (Gemini)
 anthropic = ["anthropic>=1.0"]                   # optional alternate provider
-live = ["razorpay>=1.4", "httpx>=0.27"]
+live = ["razorpay>=1.4", "httpx>=0.27", "requests>=2.31"]
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev  = ["pytest>=8.0"]
 all  = ["google-genai>=2.0", "anthropic>=1.0", "razorpay>=1.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.29", "pytest>=8.0"]
@@ -29,7 +29,7 @@ grace = "grace.cli:app"
 include = ["grace*"]
 
 [tool.setuptools.package-data]
-grace = ["templates/*.html"]
+grace = ["templates/*.html", "data/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

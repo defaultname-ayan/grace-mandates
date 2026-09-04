@@ -89,3 +89,8 @@ def test_payment_error_fields_survive_the_round_trip(tmp_path):
         assert back.invoice_id is not None
     finally:
         s.close()
+
+
+def test_non_ascii_signature_is_rejected_not_a_500():
+    raw = b'{"event":"x","payload":{}}'
+    assert verify(raw, "\u00e9\u00e9", SECRET) is False

@@ -38,11 +38,6 @@ MAX_ATTEMPTS_BEFORE_HALT = 4
 #: eMandate confirmation delay distribution (spec 10.2).
 EMANDATE_CONFIRM_DELAYS = [(24, 0.55), (48, 0.30), (72, 0.15)]
 
-#: Share of doomed mandates that Grace meets BEFORE the debit is attempted,
-#: rather than after it has already failed. Pre-debit mandates are still ACTIVE
-#: and therefore still pausable.
-PRE_DEBIT_SHARE = 0.45
-
 #: Probability that a manual charge issued while an eMandate attempt is still
 #: in flight results in BOTH debits landing (spec 10.2). This is the hazard.
 DOUBLE_DEBIT_PROB = 0.35
@@ -187,7 +182,7 @@ class SimEngine:
 
     # ------------------------------------------------------------- history
     def build_history(
-        self, m: Mandate, cust: Customer, truth: Truth, months: int = 6
+        self, m: Mandate, cust: Customer, months: int = 6
     ) -> tuple[Mandate, dict]:
         """Generate `months` of state-machine-consistent history ending just
         before the current cycle. Returns the mandate and its sim state.
@@ -195,6 +190,9 @@ class SimEngine:
         History failures always recover by the final retry: a mandate that
         halted months ago would present no decision today, so the cohort is
         alive at the decision point by construction. Documented in the manifest.
+
+        Deliberately takes no `truth`: history is driven by the latent
+        propensity alone, and the signature should make that visible.
         """
         rng = self.rng("history", m.id)
         propensity = self._propensity(m, cust)
@@ -296,55 +294,62 @@ class SimEngine:
     ) -> tuple[Mandate, dict]:
         """Advance the mandate into the cycle under decision, applying truth.
 
-        Healthy and cancel-intent mandates sit ACTIVE. Payment-failure mandates
-        have already failed at least once, so the adjudicator sees real
-        evidence: a reason code, an attempt count, and a scheduled retry.
+        Calendar-honest: the cycle under decision is THIS month's debit date.
+          * If it is still ahead of the decision date, the debit has not been
+            attempted: a doomed mandate is PRE-DEBIT, still ACTIVE, still
+            pausable. That is the product's whole window.
+          * If it is on or before the decision date, the attempt happened
+            `days_ago` days back (0-3): a doomed mandate is inside the retry
+            ladder (PENDING, next retry in the future), HALTED if the ladder is
+            spent, or -- for eMandate -- still awaiting confirmation.
+
+        An earlier version anchored post-failure cases to LAST month's date
+        whenever this month's was ahead, duplicating the final history cycle
+        with a retry dated a month in the past; the guard's 24h-retry rule
+        could never fire and the adjudicator reasoned about a stale schedule.
         """
         rng = self.rng("current", m.id)
         cycle = sim_state["next_cycle_index"]
-        cycle_date = on_cycle_day(self.decision_date, m.cycle_day)
-        if cycle_date > self.decision_date:
-            cycle_date = on_cycle_day(add_months(self.decision_date, -1), m.cycle_day)
-        if m.rail == Rail.EMANDATE and self.calendar.is_bank_holiday(cycle_date):
-            cycle_date = self.calendar.previous_business_day(cycle_date)
-        at = ensure_aware(datetime.combine(cycle_date, datetime.min.time()) + timedelta(hours=10))
+        anchor = on_cycle_day(self.decision_date, m.cycle_day)
+        if m.rail == Rail.EMANDATE and self.calendar.is_bank_holiday(anchor):
+            anchor = self.calendar.previous_business_day(anchor)
+        at = ensure_aware(datetime.combine(anchor, datetime.min.time()) + timedelta(hours=10))
         inv = self._new_invoice(m, cycle, at)
-        m.charge_at = at
+        days_ago = (self.decision_date - anchor).days
+        sim_state["next_cycle_index"] = cycle
+        sim_state["pre_debit"] = False
 
-        if not truth.payment_will_fail:
-            # Healthy this cycle, or a cancel intent whose debit would succeed.
+        # ---- debit still ahead: nothing has been attempted yet
+        if days_ago < 0:
             m.status = SubStatus.ACTIVE
             m.auth_attempts = 0
             m.last_error_reason = None
-            sim_state["next_cycle_index"] = cycle
+            m.charge_at = at
+            if truth.payment_will_fail:
+                truth.raw_reason = _pick(rng, CAUSE_REASONS[m.rail].get(truth.cause, ["payment_failed"]))
+                sim_state["pre_debit"] = True
             self.store.upsert_invoice(inv)
+            return m, sim_state
+
+        # ---- attempted `days_ago` days back
+        if not truth.payment_will_fail:
+            m.status = SubStatus.ACTIVE
+            m.auth_attempts = 0
+            m.last_error_reason = None
+            m.paid_count += 1
+            inv.status = "paid"
+            inv.attempts = 1
+            self.store.upsert_invoice(inv)
+            self.emit(m, "subscription.charged", at, self.payment_entity(m, inv.id, True, None, at))
+            nxt = on_cycle_day(add_months(anchor, 1), m.cycle_day)
+            m.charge_at = ensure_aware(datetime.combine(nxt, datetime.min.time()) + timedelta(hours=10))
+            sim_state["next_cycle_index"] = cycle + 1
             return m, sim_state
 
         reason = _pick(rng, CAUSE_REASONS[m.rail].get(truth.cause, ["payment_failed"]))
         truth.raw_reason = reason
 
-        # Grace runs daily, so it meets a doomed mandate on either side of its
-        # debit date. PRE-DEBIT is the whole point of the product: the charge is
-        # scheduled but not yet attempted, the subscription is still ACTIVE, and
-        # ACTIVE is the only state Razorpay lets you pause from. Post-failure the
-        # mandate is PENDING and pause is no longer legal -- which is exactly the
-        # window Razorpay's own Subscription Recovery agent is confined to.
-        if rng.random() < PRE_DEBIT_SHARE:
-            m.status = SubStatus.ACTIVE
-            m.auth_attempts = 0
-            m.last_error_reason = None
-            days_ahead = 1 + int(rng.random() * 6)
-            m.charge_at = ensure_aware(
-                datetime.combine(self.decision_date, datetime.min.time())
-                + timedelta(days=days_ahead, hours=10)
-            )
-            inv.issued_at = m.charge_at
-            self.store.upsert_invoice(inv)
-            sim_state["next_cycle_index"] = cycle
-            sim_state["pre_debit"] = True
-            return m, sim_state
-
-        if m.rail == Rail.EMANDATE and rng.random() < 0.45:
+        if m.rail == Rail.EMANDATE and days_ago <= 2 and rng.random() < 0.45:
             # Attempt sent, confirmation not yet received: the double-debit window.
             inv.attempt_in_flight = True
             inv.attempts = 1
@@ -352,21 +357,20 @@ class SimEngine:
             m.status = SubStatus.PENDING
             m.auth_attempts = 1
             m.last_error_reason = None  # nothing has come back yet
-            m.charge_at = at + timedelta(days=2)
             delay = self._confirm_delay_hours(rng)
+            resolve_at = max(at + timedelta(hours=delay), self.now + timedelta(hours=1))
+            m.charge_at = max(at + timedelta(days=2), self.now + timedelta(days=1))
             sim_state["inflight"] = [{
                 "invoice_id": inv.id,
-                "resolve_at": to_iso(at + timedelta(hours=delay)),
+                "resolve_at": to_iso(resolve_at),
                 "will_succeed": rng.random() < 0.35,
                 "origin": "auto",
             }]
             self.emit(m, "subscription.pending", at)
-            sim_state["next_cycle_index"] = cycle
             return m, sim_state
 
-        # Ordinary failure ladder: 1..4 attempts already consumed.
-        u = rng.random()
-        attempts = 1 if u < 0.55 else (2 if u < 0.78 else (3 if u < 0.92 else 4))
+        # Retry ladder: one attempt per elapsed day, T, T+1, T+2, T+3, halt on the 4th.
+        attempts = min(MAX_ATTEMPTS_BEFORE_HALT, days_ago + 1)
         for a in range(1, attempts + 1):
             fail_at = at + timedelta(days=a - 1)
             m.auth_attempts = a
@@ -385,7 +389,6 @@ class SimEngine:
                 self.emit(m, "subscription.pending", fail_at,
                           self.payment_entity(m, inv.id, False, reason, fail_at, suffix=f"a{a}"))
         self.store.upsert_invoice(inv)
-        sim_state["next_cycle_index"] = cycle
         return m, sim_state
 
     # ------------------------------------------------------ retry mechanics
@@ -497,7 +500,7 @@ class SimEngine:
             raise InvalidTransition(f"update requires active or authenticated (was {m.status.value})")
         if "plan_amount_paise" in fields:
             m.plan_amount_paise = int(fields["plan_amount_paise"])  # type: ignore[arg-type]
-        if "start_at" in fields and fields["start_at"]:
+        if fields.get("start_at"):
             m.charge_at = ensure_aware(fields["start_at"])  # type: ignore[arg-type]
         self.emit(m, "subscription.updated", self.now)
         return m
@@ -509,6 +512,12 @@ class SimEngine:
         in-flight debit and this one can land. The integrity guard exists to
         stop this call ever being made in that state.
         """
+        if m.status not in (SubStatus.PENDING, SubStatus.HALTED):
+            raise InvalidTransition(f"manual charge requires pending or halted (was {m.status.value})")
+        if invoice.mandate_id != m.id:
+            raise InvalidTransition("invoice belongs to a different subscription")
+        if invoice.status == "paid":
+            raise InvalidTransition("invoice is already paid")
         rng = self.rng("manual", m.id, invoice.id)
         st = self.store.get_sim_state(m.id)
         inflight = [f for f in st.get("inflight", []) if f["invoice_id"] == invoice.id]

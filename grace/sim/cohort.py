@@ -10,6 +10,7 @@ import json
 import random
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from grace.models import Cause, Customer, Mandate, Rail, SubStatus, Truth
 from grace.signals.bank_health import BankHealth
@@ -32,7 +33,11 @@ BANK_WEIGHTS = {
     "Paytm Payments Bank": 0.02,
 }
 
-CYCLE_DAYS = [1, 3, 5, 7, 10, 15, 20, 25, 28]
+#: Debit day-of-month. Indian recurring debits cluster in the first week,
+#: aligned to salary credits; a spread across the month keeps the calendar
+#: realistic. Weighted, and documented in the manifest.
+CYCLE_DAYS = [1, 2, 3, 4, 5, 7, 10, 15, 20, 25, 28]
+CYCLE_WEIGHTS = [0.12, 0.08, 0.08, 0.06, 0.14, 0.10, 0.12, 0.10, 0.08, 0.06, 0.06]
 SALARY_DAYS = [None, 1, 5, 7, 10, 15, 28, 30, 31]
 SALARY_WEIGHTS = [0.20, 0.22, 0.10, 0.10, 0.10, 0.08, 0.08, 0.07, 0.05]
 
@@ -168,7 +173,7 @@ def generate(
         )
         m = Mandate(
             id=mid, customer_id=cust.id, rail=rail, plan_amount_paise=amount,
-            cycle_day=rng.choice(CYCLE_DAYS), status=SubStatus.CREATED,
+            cycle_day=_weighted(rng, CYCLE_DAYS, CYCLE_WEIGHTS), status=SubStatus.CREATED,
             total_count=12, paid_count=0,
         )
         drafts.append((m, cust, engine._propensity(m, cust)))
@@ -181,64 +186,62 @@ def generate(
         scales[rail] = PAYMENT_FAIL_RATE[rail] / mean_p if mean_p else 1.0
 
     # ---- pass 2: truth, history, current cycle
-    counts = {"rail": {}, "cause": {}, "at_risk_reason": {}, "status": {}, "holdout": 0}
-    bulk = store.bulk()
-    bulk.__enter__()
-    for m, cust, prop in drafts:
-        r = random.Random(int(stable_unit("truth", m.id) * 2**53))
-        p_fail = max(0.005, min(0.65, prop * scales[m.rail]))
-        fw = FAILURE_PRIORS[m.rail]
-        iw = INTENT_PRIORS[m.rail]
-        p_intent = max(INTENT_RATE_FLOOR, p_fail * (sum(iw.values()) / sum(fw.values())))
+    counts: dict[str, Any] = {"rail": {}, "cause": {}, "at_risk_reason": {}, "status": {}, "holdout": 0}
+    with store.bulk():
+        for m, cust, prop in drafts:
+            r = random.Random(int(stable_unit("truth", m.id) * 2**53))
+            p_fail = max(0.005, min(0.65, prop * scales[m.rail]))
+            fw = FAILURE_PRIORS[m.rail]
+            iw = INTENT_PRIORS[m.rail]
+            p_intent = max(INTENT_RATE_FLOOR, p_fail * (sum(iw.values()) / sum(fw.values())))
 
-        u = r.random()
-        if u < p_fail:
-            cause = _weighted(r, list(fw), [w / sum(fw.values()) for w in fw.values()])
-            if cause == Cause.LIQUIDITY_TIMING:
-                # The causal story IS "salary lands just after the debit". Give
-                # the customer that salary day rather than discarding the case,
-                # so the cohort contains the pattern the signal is meant to find.
-                cust.salary_day = _salary_day_for_gap(decision_date, r.randint(1, 6))
-            elif cause == Cause.LIQUIDITY_STRUCTURAL and r.random() < 0.40:
-                # "No salary pattern" is one of the two structural signatures.
-                cust.salary_day = None
-            truth = Truth(will_fail=True, payment_will_fail=True,
-                          at_risk_reason="payment_failure", cause=cause)
-        elif u < p_fail + p_intent:
-            klass = _weighted(r, list(iw), [w / sum(iw.values()) for w in iw.values()])
-            truth = Truth(
-                will_fail=True, payment_will_fail=False, at_risk_reason="cancel_intent",
-                cause=INTENT_CAUSE[klass], cancel_intent=klass,
-                cancel_intent_text=r.choice(BY_CLASS[klass]),
-            )
-            if klass == "temporary":
-                cust.travel_flag = True
-        else:
-            truth = Truth(will_fail=False, payment_will_fail=False,
-                          at_risk_reason="none", cause=Cause.UNKNOWN)
+            u = r.random()
+            if u < p_fail:
+                cause = _weighted(r, list(fw), [w / sum(fw.values()) for w in fw.values()])
+                if cause == Cause.LIQUIDITY_TIMING:
+                    # The causal story IS "salary lands just after the debit". Give
+                    # the customer that salary day rather than discarding the case,
+                    # so the cohort contains the pattern the signal is meant to find.
+                    cust.salary_day = _salary_day_for_gap(decision_date, r.randint(1, 6))
+                elif cause == Cause.LIQUIDITY_STRUCTURAL and r.random() < 0.40:
+                    # "No salary pattern" is one of the two structural signatures.
+                    cust.salary_day = None
+                truth = Truth(will_fail=True, payment_will_fail=True,
+                              at_risk_reason="payment_failure", cause=cause)
+            elif u < p_fail + p_intent:
+                klass = _weighted(r, list(iw), [w / sum(iw.values()) for w in iw.values()])
+                truth = Truth(
+                    will_fail=True, payment_will_fail=False, at_risk_reason="cancel_intent",
+                    cause=INTENT_CAUSE[klass], cancel_intent=klass,
+                    cancel_intent_text=r.choice(BY_CLASS[klass]),
+                )
+                if klass == "temporary":
+                    cust.travel_flag = True
+            else:
+                truth = Truth(will_fail=False, payment_will_fail=False,
+                              at_risk_reason="none", cause=Cause.UNKNOWN)
 
-        base = HEALTHY_CF if not truth.will_fail else COUNTERFACTUALS[truth.cause]
-        truth.survival_under = {k: _noisy(v, m.id, k) for k, v in base.items()}
+            base = HEALTHY_CF if not truth.will_fail else COUNTERFACTUALS[truth.cause]
+            truth.survival_under = {k: _noisy(v, m.id, k) for k, v in base.items()}
 
-        m, sim_state = engine.build_history(m, cust, truth, months=history_months)
-        m, sim_state = engine.open_current_cycle(m, cust, truth, sim_state)
-        # Represents Grace having already acted on this mandate in earlier
-        # cycles, so the stopping rules are actually reachable in the batch.
-        m.interventions_total = min(3, max(0, sim_state["prior_fail_count_6m"] - 1))
+            m, sim_state = engine.build_history(m, cust, months=history_months)
+            m, sim_state = engine.open_current_cycle(m, cust, truth, sim_state)
+            # Represents Grace having already acted on this mandate in earlier
+            # cycles, so the stopping rules are actually reachable in the batch.
+            m.interventions_total = min(3, max(0, sim_state["prior_fail_count_6m"] - 1))
 
-        store.upsert_customer(cust)
-        store.upsert_mandate(m, holdout=is_holdout(m.id))
-        store.set_truth(m.id, truth)
-        store.set_sim_state(m.id, sim_state)
+            store.upsert_customer(cust)
+            store.upsert_mandate(m, holdout=is_holdout(m.id))
+            store.set_truth(m.id, truth)
+            store.set_sim_state(m.id, sim_state)
 
-        counts["rail"][m.rail.value] = counts["rail"].get(m.rail.value, 0) + 1
-        cause_key = truth.cause.value if truth.will_fail else "healthy"
-        counts["cause"][cause_key] = counts["cause"].get(cause_key, 0) + 1
-        counts["at_risk_reason"][truth.at_risk_reason] = counts["at_risk_reason"].get(truth.at_risk_reason, 0) + 1
-        counts["status"][m.status.value] = counts["status"].get(m.status.value, 0) + 1
-        counts["holdout"] += int(is_holdout(m.id))
+            counts["rail"][m.rail.value] = counts["rail"].get(m.rail.value, 0) + 1
+            cause_key = truth.cause.value if truth.will_fail else "healthy"
+            counts["cause"][cause_key] = counts["cause"].get(cause_key, 0) + 1
+            counts["at_risk_reason"][truth.at_risk_reason] = counts["at_risk_reason"].get(truth.at_risk_reason, 0) + 1
+            counts["status"][m.status.value] = counts["status"].get(m.status.value, 0) + 1
+            counts["holdout"] += int(is_holdout(m.id))
 
-    bulk.__exit__(None, None, None)
 
     manifest = {
         "GENERATED_DATA_WARNING": "Every mandate, customer, amount and outcome below is SYNTHETIC. "
@@ -251,6 +254,11 @@ def generate(
         "holdout_fraction": HOLDOUT_FRACTION,
         "holdout_selector": "sha256(mandate_id) - NOT Python hash(), which is per-process randomised",
         "rail_mix": {r.value: w for r, w in RAIL_MIX},
+        "cycle_days": dict(zip(CYCLE_DAYS, CYCLE_WEIGHTS, strict=True)),
+        "current_cycle_note": "The cycle under decision is THIS month's debit date. Ahead of the "
+                              "decision date -> pre-debit (ACTIVE, pausable); on or before it -> "
+                              "attempted days_ago days back (retry ladder / halted / eMandate "
+                              "in-flight). Nothing is dated into the previous month.",
         "payment_fail_rate_target": {r.value: v for r, v in PAYMENT_FAIL_RATE.items()},
         "payment_fail_rate_source": "PSP blog ranges (UPI Autopay 8-15%, cards 2-3%). ASSUMPTION, not NPCI data.",
         "propensity_scales": {r.value: round(v, 4) for r, v in scales.items()},

@@ -6,7 +6,6 @@ docs/WHAT-BROKE.md, not blockers: the simulator covers what test mode cannot do.
 """
 from __future__ import annotations
 
-import os
 import time
 from typing import Any, Callable
 
@@ -30,46 +29,29 @@ class SubscriptionsNotEnabled(RuntimeError):
     """
 
 
-def subscriptions_enabled(client) -> tuple[bool, str]:
+def subscriptions_enabled(client: LiveClient) -> tuple[bool, str]:
     """Probe before doing anything else, so a 401 is diagnosed rather than
-    surfacing as an opaque ServerError three calls later."""
-    import requests
+    surfacing as an opaque ServerError three calls later.
 
-    key = os.getenv("RAZORPAY_KEY_ID", "")
-    sec = os.getenv("RAZORPAY_KEY_SECRET", "")
+    Goes through the already-constructed client on purpose: `_client()` is the
+    one place that refuses non-test keys. A raw HTTP probe here re-read the
+    env and would have sent a live key to the API that the client itself
+    refuses to construct with.
+    """
     try:
-        core = requests.get("https://api.razorpay.com/v1/payments?count=1",
-                            auth=(key, sec), timeout=20)
-        subs = requests.get("https://api.razorpay.com/v1/plans?count=1",
-                            auth=(key, sec), timeout=20)
+        client.c.payment.all({"count": 1})
+    except Exception as e:  # the SDK raises its own hierarchy; the message is what matters
+        return False, f"core API unreachable with this key: {type(e).__name__}: {e}"
+    try:
+        client.c.plan.all({"count": 1})
     except Exception as e:
-        return False, f"could not reach Razorpay: {e}"
-    if subs.status_code == 200:
-        return True, "ok"
-    if core.status_code == 200 and subs.status_code == 401:
         return False, (
-            "Subscriptions is NOT enabled on this account. The same key reads "
-            "/payments fine (200) but /plans returns 401. Razorpay gates the "
-            "Subscriptions API behind full account activation (KYC), which takes "
-            "24-48h. Everything else in Grace runs on the simulator meanwhile."
+            "Subscriptions is NOT enabled on this account. The same key reads /payments fine "
+            "but /plans is refused. Razorpay gates the Subscriptions API behind full account "
+            "activation (KYC), which takes 24-48h. Everything else in Grace runs on the "
+            f"simulator meanwhile. (SDK said: {type(e).__name__}: {str(e)[:120]})"
         )
-    return False, f"core={core.status_code} subscriptions={subs.status_code}"
-
-
-def _client():
-    import razorpay  # lazy: the offline path must not need this package
-
-    key = os.getenv("RAZORPAY_KEY_ID")
-    secret = os.getenv("RAZORPAY_KEY_SECRET")
-    if not key or not secret:
-        raise RuntimeError(
-            "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set. Copy .env.example to .env "
-            "and use TEST-MODE keys (rzp_test_...)."
-        )
-    if not key.startswith("rzp_test"):
-        raise RuntimeError(f"refusing to run against a non-test key ({key[:12]}...). "
-                           "Grace never touches live keys.")
-    return razorpay.Client(auth=(key, secret))
+    return True, "ok"
 
 
 class LiveClient:
@@ -133,14 +115,22 @@ class LiveClient:
         except Exception as e:
             return ActionResult(False, "cancel", req, {}, error=str(e))
 
-    def update(self, sub_id: str, **fields: Any) -> ActionResult:
-        """Cards only. Refused before any HTTP call for other rails."""
-        method = (fields.pop("payment_method", "") or "").lower()
-        if method in ("upi", "emandate"):
-            raise RailNotSupported(
-                f"Razorpay does not allow updating a subscription authorised via {method}."
-            )
+    def update(self, sub_id: str, *, rail: str | None = None, **fields: Any) -> ActionResult:
+        """Cards only. Refused before any HTTP call for other rails.
+
+        Razorpay's PATCH takes a `plan_id`, never an amount: a step-down means
+        creating the cheaper plan first. The simulator accepts
+        `plan_amount_paise` as a shortcut; forwarding that here would be a
+        silent 400, so it is refused with the reason instead.
+        """
         req = {"method": "PATCH", "path": f"/v1/subscriptions/{sub_id}", "body": fields}
+        if rail in ("upi", "emandate"):
+            return ActionResult(False, "update", req, {}, error=(
+                f"Razorpay does not allow updating a subscription authorised via {rail}."))
+        if "plan_amount_paise" in fields:
+            return ActionResult(False, "update", req, {}, error=(
+                "Razorpay's PATCH /subscriptions takes plan_id, not an amount. Create the "
+                "cheaper plan with create_plan() and pass plan_id=... instead."))
         try:
             return ActionResult(True, "update", req, self.c.subscription.update(sub_id, fields))
         except Exception as e:

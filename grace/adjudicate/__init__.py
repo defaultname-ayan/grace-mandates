@@ -12,11 +12,12 @@ def make_llm_adjudicator(provider: str | None = None, *, effort: str | None = No
     from grace.config import CONFIG
 
     provider = (provider or CONFIG.provider).lower()
-    model = model or (CONFIG.model or None)
     if provider in ("gemini", "google"):
         from grace.adjudicate.gemini import GeminiAdjudicator
 
-        return GeminiAdjudicator(model=model, effort=effort)
+        # An explicitly passed model is PINNED (no fallbacks). GRACE_MODEL from
+        # the environment is only a preferred first model; the chain still applies.
+        return GeminiAdjudicator(model=model, effort=effort, pin=model is not None)
     if provider in ("anthropic", "claude"):
         from grace.adjudicate.claude import ClaudeAdjudicator
 
@@ -56,16 +57,21 @@ def sdk_present(provider: str | None = None) -> tuple[bool, str]:
     provider = (provider or CONFIG.provider).lower()
     if provider in ("gemini", "google"):
         try:
-            import google.genai  # noqa: F401
+            import google.genai
         except ImportError:
             return False, 'Gemini needs the SDK: pip install -e ".[llm]"'
         return True, ""
     try:
-        import anthropic  # noqa: F401
+        import anthropic
     except ImportError:
         return False, 'Anthropic needs the SDK: pip install -e ".[anthropic]"'
     return True, ""
 
 
-__all__ = ["Decision", "OfflineAdjudicator", "make_llm_adjudicator",
-           "credentials_present", "sdk_present"]
+__all__ = [
+    "Decision",
+    "OfflineAdjudicator",
+    "credentials_present",
+    "make_llm_adjudicator",
+    "sdk_present",
+]

@@ -5,4 +5,4 @@ from grace.config import Bounds
 
 DEFAULT_BOUNDS = Bounds()
 
-__all__ = ["Bounds", "DEFAULT_BOUNDS"]
+__all__ = ["DEFAULT_BOUNDS", "Bounds"]

@@ -19,7 +19,7 @@ from statistics import median
 
 from grace.util import ensure_aware
 
-DATA_DIR = Path(__file__).resolve().parents[2] / "data"
+DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 SYNTHETIC = DATA_DIR / "bank_health_SYNTHETIC.csv"
 SNAPSHOT = DATA_DIR / "bank_health_snapshot.csv"
 DOWNTIME = DATA_DIR / "downtime_events.json"
@@ -70,7 +70,8 @@ class BankHealth:
         if not self.path.exists():
             self.provenance = "MISSING"
             return
-        header_lines, data_lines = [], []
+        header_lines: list[str] = []
+        data_lines: list[str] = []
         for line in self.path.read_text().splitlines():
             (header_lines if line.startswith("#") else data_lines).append(line)
         for h in header_lines:
@@ -96,7 +97,7 @@ class BankHealth:
         if not DOWNTIME.exists():
             return []
         raw = json.loads(DOWNTIME.read_text())
-        out = []
+        out: list[dict] = []
         for w in raw.get("windows", []):
             out.append({
                 "bank": w["bank"],

@@ -49,7 +49,7 @@ def tune_threshold(store: Store, model, today: date) -> tuple[float, list[dict]]
         if ev.cancel_intent_text:
             continue  # intents are handled by their own trigger, not by risk
         gain = (t.survival_under.get("pause", 0.0) - t.survival_under.get("noop", 0.0))
-        rows.append((model.predict(featurise(ev)), gain * m.plan_amount_paise * min(3, m.remaining_count)))
+        rows.append((model.predict(featurise(ev)), gain * m.rupees_at_stake))
 
     sweep = []
     for i in range(1, 20):

@@ -7,12 +7,15 @@ because actions mutate state and the arms must not contaminate each other.
 from __future__ import annotations
 
 import shutil
+import threading
 import uuid
+from collections import Counter
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 from typing import Any, Callable
 
+from grace.adjudicate.base import safe_default
 from grace.adjudicate.schema import Decision
 from grace.config import CONFIG
 from grace.evidence import build_evidence, is_decision_trigger
@@ -47,14 +50,6 @@ def prepare_arm_db(run_dir: Path, arm: str) -> Path:
             p.unlink()
     shutil.copy2(src, dst)
     return dst
-
-
-def _tally(values) -> dict[str, int]:
-    out: dict[str, int] = {}
-    for v in values:
-        if v is not None:
-            out[str(v)] = out.get(str(v), 0) + 1
-    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
 def _noop_decision() -> Decision:
@@ -132,35 +127,40 @@ def run_batch(
         # logged no-op decision, so n_scored stays comparable across arms.
         scored_ids = store.holdout_ids() if (holdout_only or sample) else None
 
-        # A capped online sample. Free-tier quota makes a full online batch
-        # impractical, so take a DETERMINISTIC subset of the triggered holdout
-        # mandates and record exactly which ones, so every arm can be scored on
-        # the same subset and the comparison stays paired.
+        # A capped online sample: a DETERMINISTIC subset of the triggered holdout
+        # mandates, recorded so every arm can be scored on the same subset.
         sampled_ids: set[str] | None = None
         if sample:
             eligible = sorted(
-                m.id for m, ev, _, trig in bundles
-                if trig and (scored_ids is None or m.id in scored_ids)
+                (m.id for m, _ev, _t, trig in bundles
+                 if trig and (scored_ids is None or m.id in scored_ids)),
+                key=lambda mid: stable_unit("online_sample", mid),
             )
-            eligible.sort(key=lambda mid: stable_unit("online_sample", mid))
             sampled_ids = set(eligible[:sample])
 
         # ---- 2. adjudicate (parallel only where it is network-bound)
         decisions: dict[str, Decision] = {}
-        fallbacks = 0
-        to_decide = [(m, ev) for m, ev, _, trig in bundles
+        fell_back: set[str] = set()
+        to_decide = [(m, ev) for m, ev, _t, trig in bundles
                      if trig and adjudicator is not None
                      and (scored_ids is None or m.id in scored_ids)
                      and (sampled_ids is None or m.id in sampled_ids)]
 
+        done_count = [0]
+        done_lock = threading.Lock()
+
         def _one(pair):
             m, ev = pair
-            from grace.adjudicate.claude import safe_default
-
             try:
-                return m.id, adjudicator.decide(ev), None
+                out = (m.id, adjudicator.decide(ev), None)
             except Exception as e:  # never let one mandate kill the batch
-                return m.id, safe_default(f"{type(e).__name__}: {e}"), str(e)
+                out = (m.id, safe_default(f"{type(e).__name__}: {e}"), str(e))
+            with done_lock:  # report as each call lands, not after the pool drains
+                done_count[0] += 1
+                n = done_count[0]
+            if on_progress:
+                on_progress(n, len(to_decide))
+            return out
 
         if to_decide and max_workers > 1:
             with ThreadPoolExecutor(max_workers=max_workers) as pool:
@@ -168,100 +168,117 @@ def run_batch(
         else:
             results = [_one(p) for p in to_decide]
 
-        for i, (mid, dec, err) in enumerate(results):
+        for mid, dec, err in results:
             decisions[mid] = dec
             if err:
-                fallbacks += 1
-            if on_progress:
-                on_progress(i + 1, len(results))
+                fell_back.add(mid)
 
-        # ---- 3. gate, execute, audit
-        summary = {
+        # ---- 3. gate, execute, audit -- single-threaded, one commit at the end
+        summary: dict[str, Any] = {
             "arm": arm, "run_id": run_id, "adjudicator": adjudicator_name,
             "holdout_only_adjudication": holdout_only,
             "sample_size": sample,
             "sampled_ids": sorted(sampled_ids) if sampled_ids else None,
-            "n_mandates": len(mandates), "n_triggered": sum(1 for *_, t in bundles if t),
-            "adjudicator_fallbacks": fallbacks, "guard_enabled": guard_enabled,
-            "actions": {}, "flags": {}, "triggers": {}, "executed": 0, "execution_errors": 0,
+            "n_mandates": len(mandates), "n_triggered": sum(1 for *_x, t in bundles if t),
+            "adjudicator_fallbacks": len(fell_back), "guard_enabled": guard_enabled,
+            "triggers": {}, "executed": 0, "execution_errors": 0,
             "double_debits_detected": 0, "double_debits_prevented": 0,
         }
+        actions_seen: list[str] = []
+        flags_seen: list[str] = []
 
-        for m, ev, trigger, triggered in bundles:
-            decision = decisions.get(m.id) or _noop_decision()
-            summary["triggers"][trigger] = summary["triggers"].get(trigger, 0) + 1
+        with store.bulk():
+            for m, ev, trigger, _triggered in bundles:
+                decision = decisions.get(m.id) or _noop_decision()
+                summary["triggers"][trigger] = summary["triggers"].get(trigger, 0) + 1
+                # Computed ONCE, before any action runs: a step-down mutates the
+                # plan amount, and scoring against the post-action amount
+                # under-counted every step-down mandate in rupees_preserved.
+                stake = m.rupees_at_stake
 
-            res = gate(decision, ev, guard=guard, store=store, today=decision_date, calendar=cal)
-            final, params, flags = res.final_action, res.params, res.flags
+                res = gate(decision, ev, guard=guard, store=store, today=decision_date, calendar=cal)
+                final, params, flags = res.final_action, res.params, res.flags
 
-            decision_id = f"{arm}:{m.id}"
-            store.append_audit(
-                phase="intent", run_id=run_id, decision_id=decision_id, mandate_id=m.id,
-                rail=m.rail.value, status_before=m.status.value, trigger=trigger,
-                p_fail=round(ev.p_fail, 4), cause=decision.cause.value,
-                cause_conf=decision.cause_confidence, proposed_action=decision.action.value,
-                final_action=final.value, action_conf=decision.action_confidence,
-                params=params, gate_flags=flags, rationale=decision.rationale,
-                evidence_used=decision.evidence_used, customer_message=decision.customer_message,
-                escalate=decision.escalate, adjudicator=adjudicator_name,
-                rupees_at_stake=m.plan_amount_paise * min(3, m.remaining_count),
+                decision_id = f"{arm}:{m.id}"
+                store.append_audit(
+                    phase="intent", run_id=run_id, decision_id=decision_id, mandate_id=m.id,
+                    rail=m.rail.value, status_before=m.status.value, trigger=trigger,
+                    p_fail=round(ev.p_fail, 4), cause=decision.cause.value,
+                    cause_conf=decision.cause_confidence, proposed_action=decision.action.value,
+                    final_action=final.value, action_conf=decision.action_confidence,
+                    params=params, gate_flags=flags, rationale=decision.rationale,
+                    evidence_used=decision.evidence_used, customer_message=decision.customer_message,
+                    escalate=decision.escalate, adjudicator=adjudicator_name,
+                    rupees_at_stake=stake,
+                )
+
+                executed, api_req, api_res, err = False, {}, {}, None
+                if final in INTERVENTIONS:
+                    inv_id = params.get("invoice_id") if final == Action.MANUAL_CHARGE else None
+                    if inv_id and not guard.acquire(inv_id):
+                        flags["integrity_blocked"] = "another action is already in progress on this invoice"
+                        final = Action.ESCALATE
+                    else:
+                        try:
+                            result = execute(client, m, final, params)
+                        finally:
+                            if inv_id:
+                                guard.release(inv_id)  # the action is over, either way
+                        if result is not None:
+                            executed = result.ok
+                            api_req, api_res, err = result.request, result.response, result.error
+                            if not result.ok:
+                                summary["execution_errors"] += 1
+                            if executed:
+                                summary["executed"] += 1
+                                fresh = store.get_mandate(m.id) or m
+                                fresh.interventions_this_cycle += 1
+                                fresh.interventions_total += 1
+                                store.upsert_mandate(fresh)
+
+                after = store.get_mandate(m.id) or m
+                store.append_audit(
+                    phase="result", run_id=run_id, decision_id=decision_id, mandate_id=m.id,
+                    final_action=final.value, executed=executed, api_request=api_req,
+                    api_response={k: api_res.get(k) for k in ("id", "status", "charge_at", "paused_at")}
+                    if api_res else {},
+                    error=err, status_after=after.status.value,
+                )
+
+                store.save_decision(decision_id, m.id, arm, {
+                    "trigger": trigger, "p_fail": ev.p_fail,
+                    "cause": decision.cause.value, "cause_conf": decision.cause_confidence,
+                    "proposed_action": decision.action.value, "final_action": final.value,
+                    "action_conf": decision.action_confidence, "params": params,
+                    "gate_flags": flags, "rationale": decision.rationale,
+                    "evidence_used": decision.evidence_used, "escalate": decision.escalate,
+                    "executed": executed, "error": err,
+                    "fallback": m.id in fell_back,
+                    "rupees_at_stake": stake,
+                    "adjudicator": adjudicator_name,
+                    "days_to_salary": ev.days_to_salary,
+                    "emandate_attempt_in_flight": ev.emandate_attempt_in_flight,
+                })
+                actions_seen.append(final.value)
+                flags_seen.extend(flags)
+
+            summary["actions"] = dict(Counter(actions_seen))
+            summary["flags"] = dict(Counter(flags_seen))
+
+            # ---- 4. integrity accounting
+            for blocked in guard.blocked:
+                st = store.get_sim_state(blocked["mandate_id"])
+                would_have_landed = any(
+                    f["invoice_id"] == blocked["invoice_id"] and f.get("will_succeed")
+                    for f in st.get("inflight", [])
+                )
+                if would_have_landed or blocked["attempt_in_flight"]:
+                    summary["double_debits_prevented"] += 1
+            summary["guard_blocks"] = len(guard.blocked)
+            summary["double_debits_detected"] = sum(
+                guard.scan_for_double_debits(m.id) for m in mandates
             )
 
-            executed, api_req, api_res, err = False, {}, {}, None
-            if final in INTERVENTIONS:
-                result = execute(client, m, final, params)
-                if result is not None:
-                    executed = result.ok
-                    api_req, api_res, err = result.request, result.response, result.error
-                    if not result.ok:
-                        summary["execution_errors"] += 1
-                    if executed:
-                        summary["executed"] += 1
-                        m = store.get_mandate(m.id) or m
-                        m.interventions_this_cycle += 1
-                        m.interventions_total += 1
-                        store.upsert_mandate(m)
-
-            after = store.get_mandate(m.id) or m
-            store.append_audit(
-                phase="result", run_id=run_id, decision_id=decision_id, mandate_id=m.id,
-                final_action=final.value, executed=executed, api_request=api_req,
-                api_response={k: api_res.get(k) for k in ("id", "status", "charge_at", "paused_at")}
-                if api_res else {},
-                error=err, status_after=after.status.value,
-            )
-
-            store.save_decision(decision_id, m.id, arm, {
-                "trigger": trigger, "p_fail": ev.p_fail,
-                "cause": decision.cause.value, "cause_conf": decision.cause_confidence,
-                "proposed_action": decision.action.value, "final_action": final.value,
-                "action_conf": decision.action_confidence, "params": params,
-                "gate_flags": flags, "rationale": decision.rationale,
-                "evidence_used": decision.evidence_used, "escalate": decision.escalate,
-                "executed": executed, "error": err,
-                "rupees_at_stake": m.plan_amount_paise * min(3, m.remaining_count),
-                "adjudicator": adjudicator_name,
-                "days_to_salary": ev.days_to_salary,
-                "emandate_attempt_in_flight": ev.emandate_attempt_in_flight,
-            })
-
-            summary["actions"][final.value] = summary["actions"].get(final.value, 0) + 1
-            for k in flags:
-                summary["flags"][k] = summary["flags"].get(k, 0) + 1
-
-        # ---- 4. integrity accounting
-        for blocked in guard.blocked:
-            st = store.get_sim_state(blocked["mandate_id"])
-            would_have_landed = any(
-                f["invoice_id"] == blocked["invoice_id"] and f.get("will_succeed")
-                for f in st.get("inflight", [])
-            )
-            if would_have_landed or blocked["attempt_in_flight"]:
-                summary["double_debits_prevented"] += 1
-        summary["guard_blocks"] = len(guard.blocked)
-        summary["double_debits_detected"] = sum(
-            guard.scan_for_double_debits(m.id) for m in mandates
-        )
         metas = list(getattr(adjudicator, "metas", []) or [])
         if metas:
             summary["llm"] = {
@@ -271,12 +288,12 @@ def run_batch(
                 "cache_read_input_tokens": sum(x.get("cache_read_input_tokens", 0) for x in metas),
                 "mean_latency_ms": round(sum(x.get("latency_ms", 0) for x in metas) / len(metas)),
                 "thinking_tokens": sum(x.get("thinking_tokens", 0) for x in metas),
-                "requested_model": metas[0].get("requested_model") or metas[0].get("model"),
+                "requested_model": metas[0].get("requested_model"),
                 "effort": metas[0].get("effort"),
                 # Which model actually served each call. A run mostly served by a
                 # fallback model is a different experiment and must not be
                 # reported as a result for the requested model.
-                "served_by": _tally(x.get("model") for x in metas),
+                "served_by": dict(Counter(x["model"] for x in metas if x.get("model")).most_common()),
                 "fallbacks_used": sum(1 for x in metas if x.get("fallback_depth", 0) > 0),
             }
         store.set_meta(f"summary_{arm}", summary)

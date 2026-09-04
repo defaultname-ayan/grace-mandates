@@ -5,7 +5,7 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from grace.models import Customer, Mandate, Rail, SubStatus, Truth
+from grace.models import Customer, Mandate, Rail, SubStatus
 from grace.sim.engine import (
     MAX_ATTEMPTS_BEFORE_HALT,
     InvalidTransition,
@@ -209,8 +209,7 @@ def test_same_seed_produces_identical_history(tmp_path):
         e = SimEngine(s, seed=99, decision_date=date(2026, 9, 4))
         m = mk(id="simsub_det")
         c = Customer(id="cust_1", bank="HDFC Bank", salary_day=1, tenure_months=10, ltv_band="mid")
-        t = Truth(will_fail=False, payment_will_fail=False)
-        m, st = e.build_history(m, c, t)
+        m, st = e.build_history(m, c)
         evs = [(ev.name, ev.at.isoformat(), ev.error_code) for ev in s.events_for(m.id)]
         s.close()
         return evs, st
@@ -226,7 +225,7 @@ def test_history_leaves_mandate_alive_and_paying(tmp_path):
     e = SimEngine(s, seed=7, decision_date=date(2026, 9, 4))
     m = mk(id="simsub_hist")
     c = Customer(id="cust_1", bank="State Bank of India", salary_day=1, tenure_months=3, ltv_band="low")
-    m, st = e.build_history(m, c, Truth(will_fail=False))
+    m, st = e.build_history(m, c)
     assert m.status == SubStatus.ACTIVE
     assert m.paid_count >= 1
     assert st["prior_fail_count_6m"] >= 0
@@ -244,7 +243,7 @@ def test_emandate_history_avoids_bank_holidays(tmp_path):
     # cycle_day 13 lands on Sundays/Saturdays across the window
     m = mk(rail=Rail.EMANDATE, id="simsub_em", cycle_day=13)
     c = Customer(id="cust_1", bank="HDFC Bank", salary_day=1, tenure_months=8, ltv_band="mid")
-    m, _ = e.build_history(m, c, Truth(will_fail=False))
+    m, _ = e.build_history(m, c)
     charged = [ev for ev in s.events_for(m.id) if ev.name in ("subscription.charged", "subscription.pending")]
     first_attempts = [ev for ev in charged if ev.name == "subscription.pending"]
     for ev in first_attempts:

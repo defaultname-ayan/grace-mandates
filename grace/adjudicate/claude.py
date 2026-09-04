@@ -1,53 +1,42 @@
-"""The Claude adjudicator (spec 8.4)."""
+"""The Claude adjudicator (spec 8.4). Alternate provider; Gemini is the default."""
 from __future__ import annotations
 
-import os
 import time
 
-from grace.adjudicate.prompt import SYSTEM, format_evidence
+from grace.adjudicate.base import (
+    AdjudicationError,
+    LLMAdjudicator,
+    backoff,
+    user_turn,
+)
+from grace.adjudicate.prompt import SYSTEM
 from grace.adjudicate.schema import Decision
-from grace.models import Action, Cause, Evidence
+from grace.config import CONFIG
+from grace.models import Evidence
+
+DEFAULT_MODEL = "claude-opus-5"
 
 
-class AdjudicationError(RuntimeError):
-    pass
-
-
-def safe_default(reason: str) -> Decision:
-    """Graceful fallback when the model is unavailable: never act, always escalate."""
-    return Decision(
-        cause=Cause.UNKNOWN, cause_confidence=0.0,
-        action=Action.ESCALATE, action_confidence=0.0,
-        rationale=f"adjudicator unavailable: {reason}",
-        evidence_used=[], escalate=True, escalate_reason=reason,
-    )
-
-
-class ClaudeAdjudicator:
+class ClaudeAdjudicator(LLMAdjudicator):
     name = "claude"
 
     def __init__(self, model: str | None = None, effort: str | None = None,
                  max_retries: int = 2, max_tokens: int = 4000):
         import anthropic  # imported lazily so the offline path needs no SDK
 
+        super().__init__()
         self._anthropic = anthropic
         self.client = anthropic.Anthropic()
-        self.model = model or os.getenv("GRACE_MODEL", "claude-opus-5")
-        self.effort = effort or os.getenv("GRACE_EFFORT", "high")
+        # `or`, not getenv-with-default: an exported-but-empty GRACE_MODEL must
+        # still resolve to the provider default rather than to "".
+        self.model = model or CONFIG.model or DEFAULT_MODEL
+        self.effort = effort or CONFIG.effort
         self.max_retries = max_retries
         self.max_tokens = max_tokens
-        self.metas: list[dict] = []
-        self._meta_lock = __import__("threading").Lock()
-
-    def decide(self, ev: Evidence) -> Decision:
-        d, meta = self.adjudicate(ev)
-        with self._meta_lock:
-            self.metas.append(meta)
-        return d
 
     def adjudicate(self, ev: Evidence) -> tuple[Decision, dict]:
         anthropic = self._anthropic
-        user = "Evidence for one mandate follows. Decide.\n\n" + format_evidence(ev)
+        user = user_turn(ev)
         last_err: Exception | None = None
 
         for attempt in range(self.max_retries + 1):
@@ -74,20 +63,20 @@ class ClaudeAdjudicator:
                     "output_tokens": resp.usage.output_tokens,
                     "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0) or 0,
                     "request_id": getattr(resp, "_request_id", None),
-                    "model": self.model, "effort": self.effort, "attempt": attempt,
-                    "adjudicator": self.name,
+                    "model": self.model, "requested_model": self.model, "fallback_depth": 0,
+                    "effort": self.effort, "attempt": attempt, "adjudicator": self.name,
                 }
                 return parsed.clamped(), meta
             except anthropic.RateLimitError as e:
                 last_err = e
-                time.sleep(min(2**attempt, 8))
+                time.sleep(backoff(attempt))
             except anthropic.APIStatusError as e:
                 last_err = e
                 if e.status_code >= 500:
-                    time.sleep(min(2**attempt, 8))
+                    time.sleep(backoff(attempt))
                 else:
                     raise AdjudicationError(f"{e.status_code}: {e}") from e
             except anthropic.APIConnectionError as e:
                 last_err = e
-                time.sleep(min(2**attempt, 8))
-        raise AdjudicationError(f"exhausted retries: {last_err}")
+                time.sleep(backoff(attempt))
+        raise AdjudicationError(f"exhausted retries: {last_err}", transient=True)

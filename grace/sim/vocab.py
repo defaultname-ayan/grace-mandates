@@ -28,7 +28,7 @@ UPI_REASONS = [
     "vpa_resolution_failed",
 ]
 
-_NACH_PATH = Path(__file__).resolve().parents[2] / "data" / "nach_reason_codes.json"
+_NACH_PATH = Path(__file__).resolve().parents[1] / "data" / "nach_reason_codes.json"
 
 
 def nach_codes() -> list[dict]:

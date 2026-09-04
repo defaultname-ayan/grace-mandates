@@ -150,30 +150,16 @@ def eval_cmd(
     """Score the holdout and write eval.json."""
 
     from grace.evaluation.run import score
-    from grace.orchestrator import arm_db_path
-    from grace.store import Store as _Store
 
     rd = _run_dir(run)
     arm_tuple = tuple(a.strip() for a in arms.split(",") if a.strip())
-    restrict = None
-    if on_sample:
-        for a in arm_tuple:
-            db = arm_db_path(rd, a)
-            if not db.exists():
-                continue
-            st = _Store(db)
-            try:
-                ids = (st.get_meta(f"summary_{a}", {}) or {}).get("sampled_ids")
-            finally:
-                st.close()
-            if ids:
-                restrict = set(ids)
-                typer.secho(f"Scoring all arms on the {len(restrict)}-mandate sample "
-                            f"recorded by arm '{a}'.", fg="cyan")
-                break
-        if restrict is None:
-            typer.secho("No --sample run found; scoring the full holdout.", fg="yellow")
-    payload = score(rd, arm_tuple, restrict_to=restrict)
+    payload = score(rd, arm_tuple, on_sample=on_sample)
+    if payload.get("sample"):
+        smp = payload["sample"]
+        typer.secho(f"Scoring all arms on the {smp['size']}-mandate sample recorded by arm "
+                    f"'{smp['recorded_by_arm']}'. NOT a full-holdout result.", fg="cyan")
+    elif on_sample:
+        typer.secho("No --sample run found; scoring the full holdout.", fg="yellow")
     res = payload["arms"]
     if not res:
         typer.secho("No arm results. Run `grace run-batch` first.", fg="red")
@@ -350,7 +336,7 @@ def approve(
             typer.secho(f"No decision {decision_id}", fg="red")
             raise typer.Exit(1)
         s.append_audit(phase="approval", decision_id=decision_id,
-                       mandate_id=d.get("mandate_id") or decision_id.split(":")[-1],
+                       mandate_id=d.get("mandate_id") or decision_id.rsplit(":", maxsplit=1)[-1],
                        human_approved_by=by, approved_action=d["proposed_action"])
         typer.secho(f"Recorded approval of {d['proposed_action']} by {by}.", fg="green")
         typer.secho("Execution of approved re-auth is out of scope for this build "
@@ -386,7 +372,8 @@ def check_llm(
     run: str = typer.Option("demo"),
     mandate_id: str = typer.Option(None, help="Which mandate to adjudicate (default: first at-risk)."),
     effort: str = typer.Option(None, help="minimal | low | medium | high."),
-    model: str = typer.Option(None, help="Pin a specific model instead of the chain default."),
+    model: str = typer.Option(None, help="Pin exactly this model: no fallback chain, so a "
+                                          "failure is reported rather than served elsewhere."),
 ) -> None:
     """One real LLM call on one mandate. The cheapest way to prove the online path."""
 

@@ -210,3 +210,17 @@ def test_noop_and_escalate_are_always_available():
         for status in SubStatus:
             a = allowed_actions(rail, status)
             assert Action.NOOP in a and Action.ESCALATE in a
+
+
+def test_shift_start_is_reachable_on_an_authenticated_card():
+    """SHIFT_START is only ever offered on AUTHENTICATED subscriptions, where
+    paid_count is 0 by definition. The relationship gate used to deny every one."""
+    e = ev_for(rail=Rail.CARD, status=SubStatus.AUTHENTICATED, paid=0)
+    r = gate(dec(Action.SHIFT_START), e, today=TODAY)
+    assert r.final_action == Action.SHIFT_START, r.flags
+
+
+def test_pause_is_still_denied_before_the_first_payment():
+    e = ev_for(rail=Rail.CARD, status=SubStatus.ACTIVE, paid=0)
+    r = gate(dec(Action.PAUSE), e, today=TODAY)
+    assert r.final_action == Action.ESCALATE and "no_relationship_yet" in r.flags

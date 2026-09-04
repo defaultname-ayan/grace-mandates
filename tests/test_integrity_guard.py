@@ -73,14 +73,20 @@ def test_blocks_when_an_automatic_retry_is_imminent(store, engine):
     assert ok is False and "retry is scheduled" in why
 
 
-def test_lock_prevents_concurrent_action_on_one_invoice(store, engine):
+def test_check_is_pure_and_lock_is_explicit(store, engine):
+    """A check that locked as a side effect left invoices locked for 72h
+    whenever a later gate step denied the action."""
     m = mandate(rail=Rail.CARD, status=SubStatus.HALTED)
     store.upsert_mandate(m)
     inv = inflight_invoice(store, m, engine, in_flight=False)
     g = IntegrityGuard(store, now=engine.now)
     assert g.check_manual_charge(m, inv)[0] is True
+    assert g.check_manual_charge(m, inv)[0] is True, "checking twice must not lock"
+    assert g.acquire(inv.id) is True
     ok, why = g.check_manual_charge(m, inv)
     assert ok is False and "already in progress" in why
+    g.release(inv.id)
+    assert g.check_manual_charge(m, inv)[0] is True
 
 
 def test_customer_paused_upi_cannot_be_resumed(store, engine):

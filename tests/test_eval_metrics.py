@@ -40,7 +40,7 @@ def test_every_action_has_a_counterfactual_key():
 def test_counterfactual_table_covers_every_cause_and_key():
     for cause, row in COUNTERFACTUALS.items():
         assert set(row) == set(CF_KEYS), f"{cause} missing counterfactual keys"
-        for k, v in row.items():
+        for v in row.values():
             assert 0.0 <= v <= 1.0
     assert set(HEALTHY_CF) == set(CF_KEYS)
 
@@ -165,3 +165,26 @@ def test_partial_arm_is_flagged_not_silently_compared(tmp_path):
     payload = score(run_dir, ("noop", "agent"))
     assert payload["arms_comparable"] is False
     assert "PARTIAL_RUN_WARNING" in payload["arms"]["agent"]
+
+
+def test_gate_flag_reasons_are_counted_as_keys_not_as_counts(tmp_path):
+    """gate_flags maps flag -> reason STRING. Counter.update(dict) would try to
+    add the string as a count and raise TypeError; keys must be counted."""
+    s = Store(tmp_path / "g.db")
+    try:
+        mid = next(f"simsub_{i:05d}" for i in range(500) if is_holdout(f"simsub_{i:05d}"))
+        s.upsert_mandate(Mandate(id=mid, customer_id="c", rail=Rail.CARD, plan_amount_paise=10000,
+                                 cycle_day=5, status=SubStatus.ACTIVE, paid_count=2, total_count=12),
+                         holdout=True)
+        s.set_truth(mid, Truth(will_fail=False, survival_under=dict(HEALTHY_CF)))
+        s.save_decision(f"agent:{mid}", mid, "agent", {
+            "trigger": "predicted", "p_fail": 0.3, "cause": "unknown", "cause_conf": 0.5,
+            "proposed_action": "pause", "final_action": "escalate", "action_conf": 0.4,
+            "params": {}, "gate_flags": {"confidence_below_gate": "0.40 < 0.55 for pause"},
+            "rationale": "t", "evidence_used": [], "escalate": True, "executed": False,
+            "error": None, "rupees_at_stake": 30000,
+        })
+        res = evaluate_arm(s, "agent", holdout_only=True)
+        assert res["gate_flags"] == {"confidence_below_gate": 1}
+    finally:
+        s.close()

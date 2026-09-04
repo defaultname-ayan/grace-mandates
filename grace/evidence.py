@@ -34,13 +34,27 @@ def build_evidence(
     events = all_events[-recent_n:]
 
     # Derived from the event stream, exactly as a merchant could derive them.
+    # Per CYCLE, not per event: the retry ladder emits one pending event per
+    # attempt, so counting events inflated a single current failure with two
+    # retries into "failed twice before" -- which is exactly the signal that
+    # decides whether a card_expired is a reissue remap or a dead card.
+    open_inv = store.open_invoice(m.id)
     fail_names = {"subscription.pending", "subscription.halted"}
-    prior_fail_count = sum(1 for e in all_events if e.name in fail_names)
+    outcome: dict[str, str] = {}  # invoice_id -> "failed" | "charged", first-seen order
+    for e in all_events:
+        inv_id = e.invoice_id
+        if not inv_id or (open_inv and inv_id == open_inv.id):
+            continue  # the cycle under decision is not "prior"
+        if e.name == "subscription.charged":
+            outcome[inv_id] = "charged"
+        elif e.name in fail_names:
+            outcome.setdefault(inv_id, "failed")
+    prior_fail_count = sum(1 for v in outcome.values() if v == "failed")
     streak = 0
-    for e in reversed(all_events):
-        if e.name in fail_names:
+    for v in reversed(list(outcome.values())):
+        if v == "failed":
             streak += 1
-        elif e.name == "subscription.charged":
+        else:
             break
 
     salary_day, inferred = cust.salary_day, False
@@ -50,7 +64,6 @@ def build_evidence(
         inferred = salary_day is not None
 
     charge_day = m.charge_at.date() if m.charge_at else today
-    open_inv = store.open_invoice(m.id)
 
     return Evidence(
         mandate=m,

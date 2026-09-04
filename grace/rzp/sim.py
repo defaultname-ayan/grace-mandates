@@ -8,6 +8,7 @@ from grace.models import Mandate, Rail
 from grace.rzp.base import ActionResult
 from grace.sim.engine import InvalidTransition, RailNotSupported, SimEngine
 from grace.store import Store
+from grace.util import stable_hash
 
 
 class SimClient:
@@ -91,7 +92,12 @@ class SimClient:
         inv = self.store.get_invoice(invoice_id)
         if inv is None:
             return ActionResult(False, "manual_charge", req, {}, error="unknown invoice")
-        m, ok, double = self.engine.manual_charge(m, inv)
+        if inv.mandate_id != sub_id:
+            return ActionResult(False, "manual_charge", req, {}, error="invoice belongs to another subscription")
+        try:
+            m, ok, double = self.engine.manual_charge(m, inv)
+        except InvalidTransition as e:
+            return ActionResult(False, "manual_charge", req, {}, error=str(e))
         self._save(m)
         if double:
             self.double_debits += 1
@@ -102,10 +108,13 @@ class SimClient:
     # Not used by the batch; present so the Protocol is satisfied.
     def create_plan(self, *, name: str, amount_paise: int, period: str = "monthly",
                     interval: int = 1) -> dict:
-        return {"id": f"plan_sim_{abs(hash(name)) % 10**10}", "item": {"amount": amount_paise},
-                "period": period, "interval": interval}
+        # stable_hash, not hash(): builtin str hashing is per-process randomised
+        # and would break the "same seed, identical run" guarantee.
+        return {"id": f"plan_sim_{stable_hash('plan', name, amount_paise) % 10**10:010d}",
+                "item": {"amount": amount_paise}, "period": period, "interval": interval}
 
     def create_subscription(self, *, plan_id: str, total_count: int, start_at: int | None = None,
                             notes: dict | None = None) -> dict:
-        return {"id": f"sub_sim_{abs(hash(plan_id)) % 10**10}", "plan_id": plan_id,
-                "total_count": total_count, "status": "created"}
+        return {"id": f"sub_sim_{stable_hash('sub', plan_id, total_count, start_at) % 10**10:010d}",
+                "plan_id": plan_id, "total_count": total_count, "status": "created",
+                "start_at": start_at, "notes": notes or {}}

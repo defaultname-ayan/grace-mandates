@@ -10,7 +10,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from grace.config import Bounds
-from grace.models import INTERVENTIONS, Action, Cause, Evidence
+from grace.models import INTERVENTIONS, Action, Cause, Evidence, SubStatus
 from grace.policy.bounds import DEFAULT_BOUNDS
 from grace.signals.holidays import HolidayCalendar, default_calendar
 from grace.signals.salary_cycle import suggested_resume_date
@@ -61,8 +61,13 @@ def gate(
         return deny("human_required", "request_reauth requires human approval")
 
     if proposed in INTERVENTIONS:
-        # 3. No relationship yet: nothing has ever been paid.
-        if m.paid_count == 0:
+        # 3. No relationship yet: nothing has ever been paid. Two actions are
+        #    legal ONLY before the first charge (shifting the start, choosing a
+        #    cheaper plan on an authenticated card mandate); denying them here
+        #    made them unreachable in every state they are offered in.
+        pre_relationship_ok = m.status == SubStatus.AUTHENTICATED and proposed in (
+            Action.SHIFT_START, Action.STEP_DOWN_PLAN)
+        if m.paid_count == 0 and not pre_relationship_ok:
             return deny("no_relationship_yet", "paid_count == 0")
         # 4. Stopping rules.
         if m.interventions_total >= bounds.MAX_INTERVENTIONS_TOTAL:

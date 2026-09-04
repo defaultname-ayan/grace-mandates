@@ -183,6 +183,54 @@ A related bug this exposed: progress was only printed after the whole thread
 pool drained, so a 40-minute online run looked frozen. It now reports as each
 call lands.
 
+## 12. A review pass found eleven more, three of them in the numbers
+
+A static pass (ruff bugbear, mypy) plus an adversarial read-through. In order of how much they
+mattered:
+
+- **The simulator dated the "current" cycle into last month.** For 7 of 9 cycle days (any day after
+  the 4th), a failing mandate's ladder was anchored to the *previous* month's debit date, duplicating
+  the final history cycle with a retry scheduled ~27 days in the past. The adjudicator reasoned about a
+  "scheduled retry after salary" that was stale, and the guard's 24h-retry rule could never fire.
+  `open_current_cycle` is now calendar-honest: this month's debit date, pre-debit if it is still
+  ahead, retry ladder anchored to the actual attempt otherwise. Cycle days now weight toward the
+  first week of the month (salary-aligned), which is both more realistic and gives the post-attempt
+  population enough mass to exercise the guard.
+- **`rupees_at_stake` was recomputed after the action.** A step-down cuts the plan to 60%, and the
+  decision record's stake was read from the *post-action* mandate, so every step-down mandate was
+  under-counted in `rupees_preserved`. Frozen before execution; `Mandate.rupees_at_stake` is now the
+  single definition (it was written out four times).
+- **`SHIFT_START` was unreachable.** It is only ever legal on `AUTHENTICATED` subscriptions, where
+  `paid_count` is 0 by definition — which the relationship gate then denied. The prompt advertised a
+  capability the policy could never approve. Pre-relationship actions are now exempt.
+- **`prior_fail_count_6m` counted attempts, not cycles.** The retry ladder emits one event per attempt,
+  so one current failure with two retries read as "failed twice before" — the exact signal that decides
+  whether a `card_expired` is a reissue remap or a dead card. The remap rule could never fire. Counted
+  per invoice now, excluding the cycle under decision.
+- **The guard's check took the lock as a side effect.** A later gate step (salary timing) could still
+  deny, leaving the invoice locked for 72h; the next charge on it was refused as "already in progress".
+  The check is pure; the executor acquires and releases.
+- **The Razorpay probe bypassed the test-key guard.** `subscriptions_enabled` re-read the env and made
+  raw HTTP calls, so a live key in the environment would have reached the API even though
+  `LiveClient()` refuses to construct with one. It now probes through the guarded client.
+- **`data/` lived outside the package.** `pip install -e .` worked; a plain `pip install .` silently lost
+  bank-health, holiday and NACH files. Moved to `grace/data/`, shipped as package data.
+- Two unrelated exception classes both named `AdjudicationError` (one per provider); merged into
+  `adjudicate/base.py` with the shared retry/backoff/decide plumbing.
+- A `--model` pin still fell through the fallback chain, so `check-llm --model X` could report a
+  different model as "verified". Pinned means pinned now, and `GRACE_MODEL_FALLBACKS=` (set, empty)
+  means no fallbacks. Also: a 429 with a fallback available no longer sleeps on the dead model, and a
+  model that exhausts retries goes into a 120s cooldown instead of being re-probed per mandate.
+- `run-batch` committed SQLite after every write; step 3 now runs in one `bulk()` transaction.
+- `cohort.py` drove `store.bulk()` by hand with no `try/finally`; an exception mid-generation would have
+  left every later write uncommitted. Also fixed: the dotenv loader ignored `export` and inline
+  comments; `scripts/day1_live_checks.py` never imported `config` so `.env` was never loaded when run
+  as a script; webhook handler 500'd on a missing run DB, a non-ASCII signature or malformed JSON;
+  `converter(execute_now=True)` bypassed the stopping rules; `engine.manual_charge` had no status or
+  ownership guard; `SimClient` stubs used per-process `hash()`.
+
+Each of these has a regression test. 160+ tests now.
+
 ---
 
 ## Day-1 live API checks — BLOCKED ON ACCOUNT ACTIVATION

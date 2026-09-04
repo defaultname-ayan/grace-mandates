@@ -88,8 +88,24 @@ def convert(
         executed = False
         if execute_now and res.final_action in OFFER_LABEL:
             client = SimClient(store, engine)
-            out = execute(client, m, res.final_action, res.params)
-            executed = bool(out and out.ok)
+            inv_id = res.params.get("invoice_id")
+            if inv_id and not guard.acquire(inv_id):
+                res.flags["integrity_blocked"] = "another action is already in progress on this invoice"
+            else:
+                try:
+                    out = execute(client, m, res.final_action, res.params)
+                finally:
+                    if inv_id:
+                        guard.release(inv_id)
+                executed = bool(out and out.ok)
+                if executed:
+                    # Same bookkeeping as the batch loop, or the stopping rules
+                    # never see repeated /accept calls and a plan can be stepped
+                    # down 40% at a time until it hits the floor.
+                    fresh = store.get_mandate(m.id) or m
+                    fresh.interventions_this_cycle += 1
+                    fresh.interventions_total += 1
+                    store.upsert_mandate(fresh)
 
         store.append_audit(
             phase="intent_conversion", mandate_id=mandate_id,

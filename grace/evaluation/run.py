@@ -58,24 +58,39 @@ def run_all(
 
 
 def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
-          restrict_to: set[str] | None = None) -> dict:
+          restrict_to: set[str] | None = None, *, on_sample: bool = False) -> dict:
+    """Score every arm on the holdout and write eval.json.
+
+    `on_sample` restricts scoring to the deterministic subset recorded by the
+    most recent `--sample` run, for every arm, so a quota-limited online run is
+    still a paired comparison. The restriction is recorded in the payload so
+    eval.json can never be mistaken for a full-holdout result.
+    """
+    stores: dict[str, Store] = {}
+    summaries: dict[str, dict] = {}
     results: dict[str, dict] = {}
-    predictor = {}
-    manifest = {}
-    summaries = {}
-    for arm in arms:
-        db = arm_db_path(run_dir, arm)
-        if not db.exists():
-            continue
-        s = Store(db)
-        try:
+    predictor: dict = {}
+    manifest: dict = {}
+    sample_from: str | None = None
+    try:
+        for arm in arms:
+            db = arm_db_path(run_dir, arm)
+            if db.exists():
+                stores[arm] = Store(db)
+                summaries[arm] = stores[arm].get_meta(f"summary_{arm}", {}) or {}
+        if on_sample and restrict_to is None:
+            for arm, summ in summaries.items():
+                if summ.get("sampled_ids"):
+                    restrict_to, sample_from = set(summ["sampled_ids"]), arm
+                    break
+        for arm, s in stores.items():
             results[arm] = evaluate_arm(s, arm, holdout_only=True, only_ids=restrict_to)
-            summaries[arm] = s.get_meta(f"summary_{arm}", {})
             results[arm]["batch"] = summaries[arm]
             if not predictor:
                 predictor = s.get_meta("predictor", {})
                 manifest = s.get_meta("manifest", {})
-        finally:
+    finally:
+        for s in stores.values():
             s.close()
 
     # A partial arm (e.g. a previous --limit run) would otherwise be scored
@@ -104,6 +119,11 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
                              "payment behaviour.",
             "holdout_only": True,
         },
+        "sample": (
+            {"size": len(restrict_to), "recorded_by_arm": sample_from,
+             "note": "All arms scored on this subset only. NOT a full-holdout result."}
+            if restrict_to is not None else None
+        ),
         "arms": results,
         "arms_comparable": not mismatch,
         "n_scored_per_arm": scored,
@@ -113,10 +133,10 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
     }
     if any(r["batch"].get("adjudicator") == "offline_stub" for r in results.values()):
         payload["HONESTY"]["agent_column"] = (
-            "The agent arm ran the OFFLINE STUB, not Claude. The stub is deterministic and its "
+            "The agent arm ran the OFFLINE STUB, not a model. The stub is deterministic and its "
             "intent lexicon was tuned on the same templates that generate this cohort, so its "
             "intent accuracy here is circular. Treat the agent column as a pipeline check, not a "
-            "model result. Re-run without --offline for a real measurement."
+            "model result. Re-run with --online for a real measurement."
         )
     (run_dir / "eval.json").write_text(json.dumps(payload, indent=2, default=str))
     return payload

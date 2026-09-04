@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import date, datetime, timedelta, timezone
+from typing import overload
 
 UTC = timezone.utc
 
@@ -12,8 +13,16 @@ def utcnow() -> datetime:
     return datetime.now(UTC)
 
 
+@overload
+def ensure_aware(dt: datetime) -> datetime: ...
+@overload
+def ensure_aware(dt: None) -> None: ...
 def ensure_aware(dt: datetime | None) -> datetime | None:
-    """Coerce a naive datetime to UTC. Mixing naive and aware raises TypeError."""
+    """Coerce a naive datetime to UTC. Mixing naive and aware raises TypeError.
+
+    Overloaded so a non-None input types as datetime; without this every
+    caller inherits an Optional it can never actually receive.
+    """
     if dt is None:
         return None
     return dt.replace(tzinfo=UTC) if dt.tzinfo is None else dt.astimezone(UTC)
@@ -27,6 +36,13 @@ def to_iso(dt: datetime | None) -> str | None:
 def from_iso(s: str | None) -> datetime | None:
     if not s:
         return None
+    return ensure_aware(datetime.fromisoformat(s))
+
+
+def parse_iso(s: str) -> datetime:
+    """For NOT NULL columns: an empty value is a data error, not a None."""
+    if not s:
+        raise ValueError("expected an ISO datetime, got empty value")
     return ensure_aware(datetime.fromisoformat(s))
 
 
@@ -56,7 +72,7 @@ def fmt_inr(paise: int) -> str:
     s = str(whole)
     if len(s) > 3:
         head, tail = s[:-3], s[-3:]
-        groups = []
+        groups: list[str] = []
         while len(head) > 2:
             groups.insert(0, head[-2:])
             head = head[:-2]
@@ -75,10 +91,7 @@ def add_months(d: date, months: int) -> date:
     total = d.year * 12 + (d.month - 1) + months
     year, month = divmod(total, 12)
     month += 1
-    if month == 12:
-        nxt = date(year + 1, 1, 1)
-    else:
-        nxt = date(year, month + 1, 1)
+    nxt = date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)
     last_day = (nxt - timedelta(days=1)).day
     return date(year, month, min(d.day, last_day))
 
