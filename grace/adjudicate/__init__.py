@@ -52,18 +52,16 @@ def credentials_present(provider: str | None = None) -> tuple[bool, str]:
 
 
 def sdk_present(provider: str | None = None) -> tuple[bool, str]:
+    from importlib.util import find_spec
+
     from grace.config import CONFIG
 
     provider = (provider or CONFIG.provider).lower()
     if provider in ("gemini", "google"):
-        try:
-            import google.genai
-        except ImportError:
+        if find_spec("google.genai") is None:
             return False, 'Gemini needs the SDK: pip install -e ".[llm]"'
         return True, ""
-    try:
-        import anthropic
-    except ImportError:
+    if find_spec("anthropic") is None:
         return False, 'Anthropic needs the SDK: pip install -e ".[anthropic]"'
     return True, ""
 

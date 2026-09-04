@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from datetime import date
 from pathlib import Path
+from typing import Any, Callable
 
 import typer
 
@@ -174,7 +175,7 @@ def eval_cmd(
 
     typer.secho("\nHoldout results (synthetic cohort)", fg="green", bold=True)
     cols = list(res)
-    rows = [
+    rows: list[tuple[str, str, Callable[[Any], str]]] = [
         ("mandates scored", "n_scored", str),
         ("at risk", "at_risk", str),
         ("mandates preserved", "mandates_preserved", str),
@@ -239,6 +240,9 @@ def audit(
             typer.secho(f"No mandate {mandate_id} in arm '{arm}'.", fg="red")
             raise typer.Exit(1)
         c = s.get_customer(m.customer_id)
+        if c is None:
+            typer.secho(f"Mandate {mandate_id} has no customer record.", fg="red")
+            raise typer.Exit(1)
         t = s.get_truth(mandate_id)
         typer.secho(f"\n{mandate_id}  [{arm}]", fg="cyan", bold=True)
         _echo_kv("rail / status", f"{m.rail.value} / {m.status.value}")

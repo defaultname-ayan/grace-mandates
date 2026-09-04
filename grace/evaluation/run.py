@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from typing import Any
 
 from grace.adjudicate.offline import OfflineAdjudicator
 from grace.config import CONFIG
@@ -30,6 +31,16 @@ def make_adjudicator(arm: str, *, offline: bool, today: date, effort: str | None
     return adj, f"{adj.name}:{adj.model}:{adj.effort}"
 
 
+def _progress_for(arm: str, cb):
+    if cb is None:
+        return None
+
+    def _report(i: int, total: int) -> None:
+        cb(arm, i, total)
+
+    return _report
+
+
 def run_all(
     run_dir: Path,
     *,
@@ -52,7 +63,7 @@ def run_all(
             run_dir, arm, adj, decision_date=decision_date, guard_enabled=guard_enabled,
             max_workers=workers, limit=limit, holdout_only=holdout_only, sample=sample,
             adjudicator_name=name,
-            on_progress=(lambda i, t, a=arm: on_progress(a, i, t)) if on_progress else None,
+            on_progress=_progress_for(arm, on_progress),
         )
     return summaries
 
@@ -108,7 +119,7 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
                 )
 
     bh = BankHealth()
-    payload = {
+    payload: dict[str, Any] = {
         "HONESTY": {
             "cohort": "SYNTHETIC. Every mandate, amount and outcome is generated. Rupee figures "
                       "are illustrative and must not be presented as observed merchant results.",

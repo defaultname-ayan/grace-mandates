@@ -26,18 +26,16 @@ import os
 import time
 from typing import Any
 
-from grace.adjudicate.base import (
-    AdjudicationError,
-    LLMAdjudicator,
-    backoff,
-    user_turn,
-)
+from grace.adjudicate.base import AdjudicationError, LLMAdjudicator, backoff, user_turn
 from grace.adjudicate.prompt import SYSTEM
 from grace.adjudicate.schema import Decision
 from grace.config import CONFIG
 from grace.models import Evidence
 
 DEFAULT_MODEL = "gemini-3.8-flash"
+
+__all__ = ["GeminiAdjudicator", "GeminiRefusal", "AdjudicationError", "DEFAULT_MODEL",
+           "DEFAULT_FALLBACK_CHAIN", "supports_thinking_level"]
 
 #: Ordered fallback chain. The free tier returns `503 UNAVAILABLE - high demand`
 #: unpredictably, and after roughly one batch of traffic the whole flash tier
@@ -142,7 +140,8 @@ class GeminiAdjudicator(LLMAdjudicator):
             # temperature intentionally unset -- see module docstring.
         }
         if supports_thinking_level(model):
-            kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=self.thinking_level)
+            kwargs["thinking_config"] = types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel(self.thinking_level.upper()))
         return types.GenerateContentConfig(**kwargs)
 
     def _backoff(self, attempt: int) -> float:

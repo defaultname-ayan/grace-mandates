@@ -43,7 +43,7 @@ def table(arms: dict, cols: list[str]) -> str:
 def build(run_dir: Path) -> str:
     ev = json.loads((run_dir / "eval.json").read_text())
     arms, cmp = ev["arms"], ev["comparison"]
-    a, b, n = arms["agent"], arms["baseline"], arms["noop"]
+    a, b = arms["agent"], arms["baseline"]
     pred = ev.get("predictor", {})
     out = [BEGIN, "",
            "Holdout only (30% of the cohort, never used for fitting or threshold selection).",
@@ -68,7 +68,7 @@ def build(run_dir: Path) -> str:
     sp = run_dir / "eval_online_sample.json"
     if sp.exists():
         s = json.loads(sp.read_text())
-        sa, sb, sn = s["arms"]["agent"], s["arms"]["baseline"], s["arms"]["noop"]
+        sa, sb = s["arms"]["agent"], s["arms"]["baseline"]
         llm = sa["batch"].get("llm", {})
         size = s.get("sample", {}).get("size") or sa["n_scored"]
         out += [f"### Live model result ({size}-mandate online sample)", "",

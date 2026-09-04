@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import time
+from typing import Any, cast
 
 from grace.adjudicate.base import (
     AdjudicationError,
     LLMAdjudicator,
     backoff,
+    safe_default,
     user_turn,
 )
 from grace.adjudicate.prompt import SYSTEM
@@ -15,6 +17,9 @@ from grace.config import CONFIG
 from grace.models import Evidence
 
 DEFAULT_MODEL = "claude-opus-5"
+
+#: Re-exported: callers historically imported these from here.
+__all__ = ["ClaudeAdjudicator", "AdjudicationError", "safe_default", "DEFAULT_MODEL"]
 
 
 class ClaudeAdjudicator(LLMAdjudicator):
@@ -46,7 +51,7 @@ class ClaudeAdjudicator(LLMAdjudicator):
                     model=self.model,
                     max_tokens=self.max_tokens,
                     thinking={"type": "adaptive"},
-                    output_config={"effort": self.effort},
+                    output_config=cast(Any, {"effort": self.effort}),
                     system=[{"type": "text", "text": SYSTEM,
                              "cache_control": {"type": "ephemeral"}}],
                     messages=[{"role": "user", "content": user}],

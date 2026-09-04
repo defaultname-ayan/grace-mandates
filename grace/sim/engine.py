@@ -30,7 +30,7 @@ from grace.signals.bank_health import BankHealth
 from grace.signals.holidays import HolidayCalendar, default_calendar
 from grace.sim.vocab import CAUSE_REASONS, describe
 from grace.store import Store
-from grace.util import add_months, ensure_aware, on_cycle_day, stable_hash, to_iso
+from grace.util import add_months, ensure_aware, from_iso, on_cycle_day, stable_hash, to_iso
 
 #: Documented retry ladder: attempt at T, retries at T+1, T+2, T+3, then halted.
 MAX_ATTEMPTS_BEFORE_HALT = 4
@@ -563,12 +563,11 @@ class SimEngine:
     def resolve_inflight(self, m: Mandate) -> list[dict]:
         """Resolve any eMandate attempts whose confirmation has now arrived."""
         st = self.store.get_sim_state(m.id)
-        resolved = []
-        remaining = []
+        resolved: list[dict] = []
+        remaining: list[dict] = []
         for f in st.get("inflight", []):
-            from grace.util import from_iso
-
-            if from_iso(f["resolve_at"]) and from_iso(f["resolve_at"]) <= self.now:
+            due = from_iso(str(f.get("resolve_at") or ""))
+            if due is not None and due <= self.now:
                 resolved.append(f)
             else:
                 remaining.append(f)

@@ -54,6 +54,23 @@ def subscriptions_enabled(client: LiveClient) -> tuple[bool, str]:
     return True, "ok"
 
 
+def _client():
+    """The ONE place a Razorpay client is built. Refuses anything but a test key."""
+    import razorpay  # lazy: the offline path must not need this package
+
+    key = os.getenv("RAZORPAY_KEY_ID")
+    secret = os.getenv("RAZORPAY_KEY_SECRET")
+    if not key or not secret:
+        raise RuntimeError(
+            "RAZORPAY_KEY_ID / RAZORPAY_KEY_SECRET are not set. Copy .env.example to .env "
+            "and use TEST-MODE keys (rzp_test_...)."
+        )
+    if not key.startswith("rzp_test"):
+        raise RuntimeError(f"refusing to run against a non-test key ({key[:12]}...). "
+                           "Grace never touches live keys.")
+    return razorpay.Client(auth=(key, secret))
+
+
 class LiveClient:
     name = "live"
 
