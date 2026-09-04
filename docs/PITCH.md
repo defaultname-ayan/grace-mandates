@@ -84,12 +84,27 @@ change what the system is *allowed* to do — only how good the proposal is. Sam
 deterministic offline stub can stand in for either in CI.
 
 **"Is the agent column a real model result?"**
-No, and the report says so in a banner. The scored table is the deterministic offline stub, so the
-pipeline is reproducible with no network. Its intent lexicon was tuned on the same templates that
-generate the cohort, so its intent-conversion number is circular. A scored *online* sample is
-quota-limited on the free tier: the last complete attempt got 16 real decisions before the daily
-quota ran out, and the other 44 escalated — none of them acted. That's the fallback behaving
-correctly, but 16 decisions is not a measurement.
+Two columns, and the honest answer differs. The **scored holdout table** is the deterministic
+offline stub, so the pipeline reproduces with no network; its intent lexicon was tuned on the same
+templates that generate the cohort, so that number is circular. Below it is a **real Gemini run** on
+81 mandates. Lead with what it says: **the model loses to the rules baseline on rupees preserved.**
+It ties on mandates preserved (9 v 9), loses about Rs 4,500, and wins clearly on diagnosis --
+cause accuracy 78.8% against 60.6% -- while acting five times to the baseline's nine.
+
+If asked why only 81: the run covered the whole triggered holdout, but the free-tier quota ran out
+partway. 81 got a real decision, 56 hit the wall, and **all 56 were escalated by the fallback
+without acting**. Scoring those as the agent's work would credit it for decisions it never made, so
+every arm is scored on the 81 (`grace eval --on-model-decided`). And the chain fell through under
+load: only 4 of 81 calls came from the requested `gemini-3.7-flash`, 58 from a lite model. It is not
+a flagship-model result and the README says so.
+
+**"So the LLM didn't help?"**
+On revenue, on this evidence, no -- and the README says the rules baseline is the better revenue
+engine. What the model buys is diagnosis and restraint: it identifies the cause correctly far more
+often, and it acts half as often to reach the same number of saved mandates. For a system whose
+whole trust model is "the model proposes and code disposes", a proposer that is right about *why*
+and conservative about *when* is the useful property -- and it is the one that would compound as the
+action space grows. Say that, then say n is 81 and the gap is not statistically separated.
 
 ---
 

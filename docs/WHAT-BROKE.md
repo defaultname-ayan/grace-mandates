@@ -231,6 +231,32 @@ mattered:
 
 Each of these has a regression test. 160+ tests now.
 
+## 13. The online run kept being shaped by quota, not by the model
+
+Three attempts at a scored online run, and every one was decided by the provider rather than by
+anything in this repo.
+
+- Attempt 1 (60-mandate sample) completed on a cohort that still had the current-cycle dating bug,
+  so it could not stand.
+- Attempt 2, after the fix, got **16 of 60** before the free-tier daily quota ran out.
+- Attempt 3, on a fresh key, covered the whole triggered holdout: **81 of 137 got a real decision,
+  56 hit the quota wall.** A probe minutes earlier had shown the flash tier answering in 4.5s; under
+  sustained load it 503'd and 429'd, and the chain fell through -- only 4 of 81 calls came from the
+  requested `gemini-3.7-flash`, 58 from `gemini-3.1-flash-lite`.
+
+Two things follow, and both are in the README.
+
+**All 56 quota failures escalated. None acted.** That is the fallback doing exactly what it exists
+for, and it is the strongest evidence in the repo that the safety property holds under a real
+provider outage rather than a simulated one.
+
+**Scoring them would have been dishonest.** Counting 56 forced escalations as the agent's decisions
+drags its measured performance down for a reason that has nothing to do with its judgement -- and
+the reverse framing, quietly dropping them, would flatter it. So `grace eval --on-model-decided`
+scores *every* arm on the mandates the model actually decided, and the restriction is recorded in
+`eval.json` with the count that hit the wall. On that basis the model **loses to the rules baseline
+on rupees preserved** and wins on cause accuracy; the README leads with the loss.
+
 ---
 
 ## Day-1 live API checks — BLOCKED ON ACCOUNT ACTIVATION

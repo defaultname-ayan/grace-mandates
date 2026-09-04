@@ -71,28 +71,51 @@ def build(run_dir: Path) -> str:
         sa, sb = s["arms"]["agent"], s["arms"]["baseline"]
         llm = sa["batch"].get("llm", {})
         size = s.get("sample", {}).get("size") or sa["n_scored"]
-        out += [f"### Live model result ({size}-mandate online sample)", "",
-                "The table above ran the deterministic offline stub. Below is a **real Gemini run** on a "
-                f"deterministic {size}-mandate subset of the holdout, every arm scored on exactly those "
-                f"{size} so the comparison stays paired. Reproduce with "
-                f"`grace run-batch --online --arms agent --sample {size} --workers 2` then "
-                "`grace eval --on-sample`.", "",
+        out += [f"### Live model result ({size} mandates, real Gemini calls)", "",
+                "The table above ran the deterministic offline stub. Below is a **real Gemini run**, "
+                f"with every arm scored on exactly the same {size} mandates so the comparison stays "
+                "paired.", "",
                 table(s["arms"], ["noop", "baseline", "agent"]).replace("| noop |", "| do nothing |")
                 .replace("| baseline |", "| rules baseline |").replace("| agent |", "| **agent (Gemini)** |"), ""]
-        verdict = ("does NOT beat the rules baseline on revenue preserved — it ties it"
-                   if sa["rupees_preserved_paise"] == sb["rupees_preserved_paise"] else
-                   "beats the rules baseline on revenue preserved" if sa["rupees_preserved_paise"] > sb["rupees_preserved_paise"]
-                   else "**loses to the rules baseline on revenue preserved**")
-        out += [f"**On this sample the agent {verdict}** ({fmt_inr(sa['rupees_preserved_paise'])} vs "
-                f"{fmt_inr(sb['rupees_preserved_paise'])}), with {sa['interventions']} interventions to the "
-                f"baseline's {sb['interventions']} and cause accuracy {pct(sa.get('cause_accuracy'))} vs "
-                f"{pct(sb.get('cause_accuracy'))}.", "",
-                f"- **n is small** ({size} mandates, {sa['at_risk']} at risk) — not enough to separate arms on a rupee total.",
-                f"- **Served by:** {llm.get('served_by', {})} (requested `{llm.get('requested_model')}`; "
-                f"{llm.get('fallbacks_used', 0)} fallback(s)). A run served by lite/fallback models is not a "
-                "flagship-model result and is not presented as one.",
-                f"- **Cost:** {llm.get('input_tokens', 0):,} input + {llm.get('output_tokens', 0):,} output + "
-                f"{llm.get('thinking_tokens', 0):,} thinking tokens, {llm.get('mean_latency_ms', 0)/1000:.1f}s mean latency.",
+        kind = s.get("sample", {}).get("kind", "sample")
+        rup_a, rup_b = sa["rupees_preserved_paise"], sb["rupees_preserved_paise"]
+        pres_a, pres_b = sa["mandates_preserved"], sb["mandates_preserved"]
+        if rup_a > rup_b:
+            verdict = "**beats the rules baseline on revenue preserved**"
+        elif rup_a == rup_b:
+            verdict = "**ties the rules baseline on revenue preserved**"
+        else:
+            verdict = ("**does NOT beat the rules baseline on revenue preserved -- it loses to it**")
+        out += [f"On these mandates the model {verdict}: {fmt_inr(rup_a)} against the baseline's "
+                f"{fmt_inr(rup_b)}, from {pres_a} mandates preserved against {pres_b}. Where it is "
+                f"clearly ahead is diagnosis and restraint: cause accuracy {pct(sa.get('cause_accuracy'))} "
+                f"against {pct(sb.get('cause_accuracy'))}, with {sa['interventions']} interventions to "
+                f"the baseline's {sb['interventions']}.", "",
+                "The build spec said that if the agent does not beat the baseline on rupees preserved "
+                "at an equal or lower false-intervention rate, the README says so and the baseline "
+                "stays the shipped default. Both arms show a 0% false-intervention rate here, and the "
+                "baseline preserves more rupees. **So: on this evidence the rules baseline is the "
+                "better revenue engine, and the model's advantage is that it explains itself and acts "
+                "less often.**", ""]
+        if kind == "model_decided":
+            fb = sa["batch"].get("adjudicator_fallbacks", 0)
+            out += ["#### Why only these mandates", "",
+                    f"The online run adjudicated the whole triggered holdout, but the free-tier quota "
+                    f"ran out partway: **{llm.get('calls', 0)} mandates got a real model decision and "
+                    f"{fb} hit the quota wall.** Every one of those {fb} was escalated by the safety "
+                    f"fallback and **none of them acted** -- which is the intended behaviour, but "
+                    f"scoring them as the agent's work would credit it for decisions it never made. "
+                    f"So every arm is scored on the mandates the model actually decided. Reproduce "
+                    f"with `grace eval --run demo --on-model-decided`.", ""]
+        out += [f"- **n is small** ({size} scored, {sa['at_risk']} at risk). Not enough to separate "
+                f"two arms on a rupee total; the cause-accuracy gap is the one difference with margin.",
+                f"- **Served by:** {llm.get('served_by', {})}. The requested model was "
+                f"`{llm.get('requested_model')}`, but the flash tier 503'd and 429'd under sustained "
+                f"load, so the chain fell through to the lite models for most calls. **This is not a "
+                f"flagship-model result and is not presented as one.**",
+                f"- **Cost:** {llm.get('input_tokens', 0):,} input + {llm.get('output_tokens', 0):,} "
+                f"output + {llm.get('thinking_tokens', 0):,} thinking tokens, "
+                f"{llm.get('mean_latency_ms', 0)/1000:.1f}s mean latency.",
                 f"- Policy overrides on real model output: {sa.get('gate_flags', {})}.", ""]
     else:
         out += ["### Live model result", "",

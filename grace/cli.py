@@ -144,6 +144,10 @@ def run_batch_cmd(
 def eval_cmd(
     run: str = typer.Option("demo"),
     arms: str = typer.Option("noop,baseline,agent"),
+    on_model_decided: bool = typer.Option(
+        False, "--on-model-decided",
+        help="Score every arm on the mandates the model actually decided, excluding those the "
+             "safety fallback escalated after a provider failure. For quota-truncated online runs."),
     on_sample: bool = typer.Option(False, "--on-sample",
                                    help="Score every arm on the sampled subset recorded by the "
                                         "last --sample run, so the comparison stays paired."),
@@ -154,13 +158,13 @@ def eval_cmd(
 
     rd = _run_dir(run)
     arm_tuple = tuple(a.strip() for a in arms.split(",") if a.strip())
-    payload = score(rd, arm_tuple, on_sample=on_sample)
+    payload = score(rd, arm_tuple, on_sample=on_sample, on_model_decided=on_model_decided)
     if payload.get("sample"):
         smp = payload["sample"]
         typer.secho(f"Scoring all arms on the {smp['size']}-mandate sample recorded by arm "
                     f"'{smp['recorded_by_arm']}'. NOT a full-holdout result.", fg="cyan")
-    elif on_sample:
-        typer.secho("No --sample run found; scoring the full holdout.", fg="yellow")
+    elif on_sample or on_model_decided:
+        typer.secho("No restricted run found; scoring the full holdout.", fg="yellow")
     res = payload["arms"]
     if not res:
         typer.secho("No arm results. Run `grace run-batch` first.", fg="red")

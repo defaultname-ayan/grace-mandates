@@ -76,21 +76,38 @@ Holdout only (30% of the cohort, never used for fitting or threshold selection).
 
 **Counterfactual formula.** `rupees preserved = Σ plan_amount × min(3, remaining_cycles)` over at-risk mandates that survive. Survival is drawn from the cohort's counterfactual table using **common random numbers** — one fixed uniform per mandate shared across all arms, so arms differ only by the action they chose, never by luck.
 
-### Live model result
+### Live model result (81 mandates, real Gemini calls)
 
-**The live path is verified; a full online *sample* is not, and the reason is quota.** `grace check-llm` makes a real call and returns a correct decision — that is the proof the online path works end to end. Scaling it to a scored sample runs into the free tier: the flash models share a daily quota that roughly one batch exhausts, after which they return `429 RESOURCE_EXHAUSTED` and only the lite models serve, at under ~7 requests/minute.
+The table above ran the deterministic offline stub. Below is a **real Gemini run**, with every arm scored on exactly the same 81 mandates so the comparison stays paired.
 
-The last complete attempt (60 mandates) is worth reporting for what it shows about failure rather than about the model: **16 mandates got a real decision and 44 hit the quota wall — and all 44 escalated. None acted.** That is the intended behaviour under provider failure, and it is why the agent column here is the offline stub: 16 decisions is not a model-quality measurement and will not be presented as one.
+| Metric | do nothing | rules baseline | **agent (Gemini)** |
+|---|---|---|---|
+| Mandates scored | 81 | 81 | 81 |
+| At risk | 33 | 33 | 33 |
+| **Mandates preserved** | 6 | 9 | 9 |
+| **Rupees preserved** | Rs 97,782.00 | Rs 1,26,273.00 | Rs 1,21,773.00 |
+| Preservation rate | 18.2% | 27.3% | 27.3% |
+| Interventions | 0 | 9 | 5 |
+| False interventions | 0 | 0 | 0 |
+| **False-intervention rate** | – | 0.0% | 0.0% |
+| False-intervention cost | Rs 0.00 | Rs 0.00 | Rs 0.00 |
+| Escalation rate | 0.0% | 12.3% | 11.1% |
+| Cause accuracy | 6.1% | 60.6% | 78.8% |
+| Action regret (lower is better) | 0.1664 | 0.1355 | 0.1352 |
+| Intent conversion | 0.0% | 55.6% | 44.4% |
 
-To produce one when quota allows:
+On these mandates the model **does NOT beat the rules baseline on revenue preserved -- it loses to it**: Rs 1,21,773.00 against the baseline's Rs 1,26,273.00, from 9 mandates preserved against 9. Where it is clearly ahead is diagnosis and restraint: cause accuracy 78.8% against 60.6%, with 5 interventions to the baseline's 9.
 
-```bash
-grace run-batch --run demo --online --arms agent --sample 60 --workers 2
-grace eval --run demo --on-sample
-cp runs/demo/eval.json runs/demo/eval_online_sample.json
-grace run-batch --run demo --offline --arms agent   # restore the offline arm
-grace eval --run demo && python -m scripts.update_readme_results
-```
+The build spec said that if the agent does not beat the baseline on rupees preserved at an equal or lower false-intervention rate, the README says so and the baseline stays the shipped default. Both arms show a 0% false-intervention rate here, and the baseline preserves more rupees. **So: on this evidence the rules baseline is the better revenue engine, and the model's advantage is that it explains itself and acts less often.**
+
+#### Why only these mandates
+
+The online run adjudicated the whole triggered holdout, but the free-tier quota ran out partway: **81 mandates got a real model decision and 56 hit the quota wall.** Every one of those 56 was escalated by the safety fallback and **none of them acted** -- which is the intended behaviour, but scoring them as the agent's work would credit it for decisions it never made. So every arm is scored on the mandates the model actually decided. Reproduce with `grace eval --run demo --on-model-decided`.
+
+- **n is small** (81 scored, 33 at risk). Not enough to separate two arms on a rupee total; the cause-accuracy gap is the one difference with margin.
+- **Served by:** {'gemini-3.1-flash-lite': 58, 'gemini-3.5-flash': 12, 'gemini-3.5-flash-lite': 6, 'gemini-3.7-flash': 4, 'gemini-3.8-flash': 1}. The requested model was `gemini-3.7-flash`, but the flash tier 503'd and 429'd under sustained load, so the chain fell through to the lite models for most calls. **This is not a flagship-model result and is not presented as one.**
+- **Cost:** 147,045 input + 17,718 output + 42,533 thinking tokens, 29.1s mean latency.
+- Policy overrides on real model output: {'cancel_cause_gate': 3, 'charge_before_salary_blocked': 2, 'param_rewritten': 3, 'human_required': 1}.
 
 ### Integrity
 

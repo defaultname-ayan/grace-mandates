@@ -69,7 +69,8 @@ def run_all(
 
 
 def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
-          restrict_to: set[str] | None = None, *, on_sample: bool = False) -> dict:
+          restrict_to: set[str] | None = None, *, on_sample: bool = False,
+          on_model_decided: bool = False) -> dict:
     """Score every arm on the holdout and write eval.json.
 
     `on_sample` restricts scoring to the deterministic subset recorded by the
@@ -83,6 +84,7 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
     predictor: dict = {}
     manifest: dict = {}
     sample_from: str | None = None
+    restrict_kind = "sample"
     try:
         for arm in arms:
             db = arm_db_path(run_dir, arm)
@@ -93,6 +95,13 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
             for arm, summ in summaries.items():
                 if summ.get("sampled_ids"):
                     restrict_to, sample_from = set(summ["sampled_ids"]), arm
+                    restrict_kind = "sample"
+                    break
+        if on_model_decided and restrict_to is None:
+            for arm, summ in summaries.items():
+                if summ.get("model_decided_ids"):
+                    restrict_to, sample_from = set(summ["model_decided_ids"]), arm
+                    restrict_kind = "model_decided"
                     break
         for arm, s in stores.items():
             results[arm] = evaluate_arm(s, arm, holdout_only=True, only_ids=restrict_to)
@@ -131,8 +140,20 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
             "holdout_only": True,
         },
         "sample": (
-            {"size": len(restrict_to), "recorded_by_arm": sample_from,
-             "note": "All arms scored on this subset only. NOT a full-holdout result."}
+            {
+                "size": max((r["n_scored"] for r in results.values()), default=0),
+                "restriction_set_size": len(restrict_to),
+                "recorded_by_arm": sample_from,
+                "kind": restrict_kind,
+                "note": (
+                    "All arms scored on the mandates the model actually decided. The rest of the "
+                    "triggered holdout hit the provider's quota and was escalated by the safety "
+                    "fallback, which never acts; scoring those as the agent's work would credit it "
+                    "for decisions it never made. NOT a full-holdout result."
+                    if restrict_kind == "model_decided" else
+                    "All arms scored on this subset only. NOT a full-holdout result."
+                ),
+            }
             if restrict_to is not None else None
         ),
         "arms": results,

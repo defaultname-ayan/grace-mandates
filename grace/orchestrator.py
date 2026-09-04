@@ -179,6 +179,11 @@ def run_batch(
             "holdout_only_adjudication": holdout_only,
             "sample_size": sample,
             "sampled_ids": sorted(sampled_ids) if sampled_ids else None,
+            # Mandates that got a genuine model decision, i.e. the adjudicator
+            # did not fall back. Recorded so a quota-truncated online run can be
+            # scored on exactly the cases the model actually decided, for every
+            # arm, instead of being reported as if the fallbacks were its work.
+            "model_decided_ids": None,
             "n_mandates": len(mandates), "n_triggered": sum(1 for *_x, t in bundles if t),
             "adjudicator_fallbacks": len(fell_back), "guard_enabled": guard_enabled,
             "triggers": {}, "executed": 0, "execution_errors": 0,
@@ -278,6 +283,11 @@ def run_batch(
             summary["double_debits_detected"] = sum(
                 guard.scan_for_double_debits(m.id) for m in mandates
             )
+
+        if adjudicator is not None:
+            decided = [m.id for m, _ev, _t, trig in bundles
+                       if trig and m.id in decisions and m.id not in fell_back]
+            summary["model_decided_ids"] = sorted(decided)
 
         metas = list(getattr(adjudicator, "metas", []) or [])
         if metas:
