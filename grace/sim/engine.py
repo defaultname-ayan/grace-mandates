@@ -14,6 +14,7 @@ event streams.
 from __future__ import annotations
 
 import random
+from typing import Any
 from datetime import date, datetime, timedelta
 
 from grace.models import (
@@ -490,7 +491,7 @@ class SimEngine:
         self.emit(m, "subscription.cancelled", self.now)
         return m
 
-    def update(self, m: Mandate, **fields: object) -> Mandate:
+    def update(self, m: Mandate, **fields: Any) -> Mandate:
         """Spec 2.4: cards only. UPI and eMandate cannot be updated at all."""
         if m.rail != Rail.CARD:
             raise RailNotSupported(
@@ -499,9 +500,9 @@ class SimEngine:
         if m.status not in (SubStatus.ACTIVE, SubStatus.AUTHENTICATED):
             raise InvalidTransition(f"update requires active or authenticated (was {m.status.value})")
         if "plan_amount_paise" in fields:
-            m.plan_amount_paise = int(fields["plan_amount_paise"])  # type: ignore[arg-type]
+            m.plan_amount_paise = int(fields["plan_amount_paise"])
         if fields.get("start_at"):
-            m.charge_at = ensure_aware(fields["start_at"])  # type: ignore[arg-type]
+            m.charge_at = ensure_aware(fields["start_at"])
         self.emit(m, "subscription.updated", self.now)
         return m
 

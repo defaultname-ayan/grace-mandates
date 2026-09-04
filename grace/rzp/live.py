@@ -6,6 +6,8 @@ docs/WHAT-BROKE.md, not blockers: the simulator covers what test mode cannot do.
 """
 from __future__ import annotations
 
+import os
+
 import time
 from typing import Any, Callable
 
