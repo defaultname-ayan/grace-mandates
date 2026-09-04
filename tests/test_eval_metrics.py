@@ -188,3 +188,38 @@ def test_gate_flag_reasons_are_counted_as_keys_not_as_counts(tmp_path):
         assert res["gate_flags"] == {"confidence_below_gate": 1}
     finally:
         s.close()
+
+
+def test_prior_failure_signals_are_alive_across_the_cohort(tmp_path):
+    """Guards a bug that shipped twice, in opposite directions.
+
+    Counting pending/halted EVENTS inflated one failure with two retries into
+    "failed twice before". Counting each invoice by its FINAL outcome zeroed
+    the feature, because generated history always recovers -- so no mandate had
+    any prior failure, the predictor lost its strongest feature, and the
+    pre-emptive pause could never fire. Both versions passed every other test.
+    """
+    from collections import Counter
+    from datetime import date
+
+    from grace.evidence import build_evidence
+    from grace.signals.bank_health import BankHealth
+    from grace.signals.holidays import HolidayCalendar
+    from grace.sim.cohort import generate
+
+    today = date(2026, 9, 4)
+    s = Store(tmp_path / "c.db")
+    try:
+        generate(s, n=250, seed=11, decision_date=today)
+        bh, cal = BankHealth(), HolidayCalendar()
+        counts = Counter()
+        for m in s.all_mandates():
+            ev = build_evidence(s, m, bank_health=bh, calendar=cal, today=today)
+            counts[ev.prior_fail_count_6m] += 1
+            # A single current failure with N retries must not read as N bounces.
+            assert ev.prior_fail_count_6m <= 6, f"{m.id}: implausible {ev.prior_fail_count_6m}"
+        assert counts[0] < sum(counts.values()), "no mandate has a prior bounce: signal is dead"
+        assert sum(v for k, v in counts.items() if k >= 1) > 0.2 * sum(counts.values()), \
+            f"prior-bounce signal too sparse to be usable: {dict(counts)}"
+    finally:
+        s.close()

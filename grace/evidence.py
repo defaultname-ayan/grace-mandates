@@ -34,25 +34,37 @@ def build_evidence(
     events = all_events[-recent_n:]
 
     # Derived from the event stream, exactly as a merchant could derive them.
-    # Per CYCLE, not per event: the retry ladder emits one pending event per
-    # attempt, so counting events inflated a single current failure with two
-    # retries into "failed twice before" -- which is exactly the signal that
-    # decides whether a card_expired is a reissue remap or a dead card.
+    # Per CYCLE, not per event, and counting BOUNCES rather than final outcomes.
+    #
+    # Two earlier versions of this were wrong in opposite directions. Counting
+    # pending/halted EVENTS inflated one failure with two retries into "failed
+    # twice". Then counting each invoice by its FINAL outcome zeroed the
+    # feature entirely, because generated history always recovers by the last
+    # retry -- a recovered cycle looked like a clean one, so no mandate in the
+    # cohort had any prior failure and the pre-emptive path could never fire.
+    #
+    # What a merchant actually cares about is how often this mandate's debit
+    # has BOUNCED, recovered or not; and, separately, whether the most recent
+    # cycles ended unpaid. Those are different questions, so they are counted
+    # separately. The cycle under decision is excluded from both: it is not
+    # "prior".
     open_inv = store.open_invoice(m.id)
     fail_names = {"subscription.pending", "subscription.halted"}
-    outcome: dict[str, str] = {}  # invoice_id -> "failed" | "charged", first-seen order
+    bounced: set[str] = set()          # invoices with >= 1 failed attempt
+    ended_unpaid: dict[str, bool] = {}  # invoice -> still unpaid at the end
     for e in all_events:
         inv_id = e.invoice_id
         if not inv_id or (open_inv and inv_id == open_inv.id):
-            continue  # the cycle under decision is not "prior"
+            continue
         if e.name == "subscription.charged":
-            outcome[inv_id] = "charged"
+            ended_unpaid[inv_id] = False
         elif e.name in fail_names:
-            outcome.setdefault(inv_id, "failed")
-    prior_fail_count = sum(1 for v in outcome.values() if v == "failed")
+            bounced.add(inv_id)
+            ended_unpaid.setdefault(inv_id, True)
+    prior_fail_count = len(bounced)
     streak = 0
-    for v in reversed(list(outcome.values())):
-        if v == "failed":
+    for unpaid in reversed(list(ended_unpaid.values())):
+        if unpaid:
             streak += 1
         else:
             break
