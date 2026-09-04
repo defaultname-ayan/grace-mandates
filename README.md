@@ -76,9 +76,32 @@ Holdout only (30% of the cohort, never used for fitting or threshold selection).
 
 **Counterfactual formula.** `rupees preserved = Σ plan_amount × min(3, remaining_cycles)` over at-risk mandates that survive. Survival is drawn from the cohort's counterfactual table using **common random numbers** — one fixed uniform per mandate shared across all arms, so arms differ only by the action they chose, never by luck.
 
-### Live model result
+### Live model result (60-mandate online sample)
 
-_No online sample has been scored against this cohort yet. Run `grace run-batch --online --arms agent --sample 60 --workers 2`, then `grace eval --on-sample`, save the payload as `runs/demo/eval_online_sample.json`, and regenerate._
+The table above ran the deterministic offline stub. Below is a **real Gemini run** on a deterministic 60-mandate subset of the holdout, every arm scored on exactly those 60 so the comparison stays paired. Reproduce with `grace run-batch --online --arms agent --sample 60 --workers 2` then `grace eval --on-sample`.
+
+| Metric | do nothing | rules baseline | **agent (Gemini)** |
+|---|---|---|---|
+| Mandates scored | 60 | 60 | 60 |
+| At risk | 30 | 30 | 30 |
+| **Mandates preserved** | 4 | 7 | 9 |
+| **Rupees preserved** | Rs 48,888.00 | Rs 93,879.00 | Rs 1,28,373.00 |
+| Preservation rate | 13.3% | 23.3% | 30.0% |
+| Interventions | 0 | 8 | 6 |
+| False interventions | 0 | 0 | 0 |
+| **False-intervention rate** | – | 0.0% | 0.0% |
+| False-intervention cost | Rs 0.00 | Rs 0.00 | Rs 0.00 |
+| Escalation rate | 0.0% | 18.3% | 13.3% |
+| Cause accuracy | 0.0% | 53.3% | 66.7% |
+| Action regret (lower is better) | 0.2272 | 0.1909 | 0.1730 |
+| Intent conversion | 0.0% | 50.0% | 62.5% |
+
+**On this sample the agent beats the rules baseline on revenue preserved** (Rs 1,28,373.00 vs Rs 93,879.00), with 6 interventions to the baseline's 8 and cause accuracy 66.7% vs 53.3%.
+
+- **n is small** (60 mandates, 30 at risk) — not enough to separate arms on a rupee total.
+- **Served by:** {'gemini-3.1-flash-lite': 53, 'gemini-3.5-flash-lite': 7} (requested `gemini-3.5-flash-lite`; 53 fallback(s)). A run served by lite/fallback models is not a flagship-model result and is not presented as one.
+- **Cost:** 109,059 input + 12,572 output + 24,907 thinking tokens, 19.6s mean latency.
+- Policy overrides on real model output: {'cancel_cause_gate': 2, 'charge_before_salary_blocked': 2, 'human_required': 2, 'param_rewritten': 1}.
 
 ### Integrity
 

@@ -1,0 +1,93 @@
+"""Runtime configuration. Environment overrides, with safe defaults."""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load .env into the environment if present.
+
+    Hand-rolled rather than adding python-dotenv: the offline path is meant to
+    install with three dependencies. Existing environment variables always win,
+    so an explicit `export` overrides the file.
+    """
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
+        if not candidate.is_file():
+            continue
+        for raw in candidate.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[len("export "):].lstrip()
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip()
+            if val[:1] in ('"', "'") and val[-1:] == val[:1] and len(val) >= 2:
+                val = val[1:-1]
+            elif " #" in val:  # inline comment on an unquoted value
+                val = val.split(" #", 1)[0].rstrip()
+            if key and val and key not in os.environ:
+                os.environ[key] = val
+        return
+
+
+_load_dotenv()
+
+
+def _f(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _i(name: str, default: int) -> int:
+    try:
+        return int(os.getenv(name, default))
+    except (TypeError, ValueError):
+        return default
+
+
+@dataclass(frozen=True)
+class Bounds:
+    """Hard limits enforced in code. The model can never widen these (spec 9.2)."""
+
+    MAX_PAUSE_CYCLES: int = 2
+    MAX_INTERVENTIONS_PER_CYCLE: int = 1
+    MAX_INTERVENTIONS_TOTAL: int = 3
+    MAX_RESUME_HORIZON_DAYS: int = 62
+    CONF_PAUSE: float = 0.55
+    CONF_MONEY: float = 0.65           # manual_charge, step_down_plan
+    CONF_CANCEL_CAUSE: float = 0.70    # cause_confidence for cancel_at_cycle_end
+    UPI_AFA_CAP_PAISE: int = 1_500_000  # Rs 15,000
+
+
+@dataclass(frozen=True)
+class Config:
+    seed: int = _i("GRACE_SEED", 20260905)
+    theta_low: float = _f("GRACE_THETA_LOW", 0.15)
+    theta_high: float = _f("GRACE_THETA_HIGH", 0.60)
+    #: "gemini" (default) or "anthropic". Both implement the same adjudicator
+    #: interface; the policy layer is identical either way.
+    provider: str = os.getenv("GRACE_PROVIDER", "gemini").lower()
+    model: str = os.getenv("GRACE_MODEL", "")  # empty -> the provider's default
+    #: Ordered model fallback chain. None = unset (use the provider default
+    #: chain); () = explicitly set empty (no fallbacks at all).
+    model_fallbacks: tuple[str, ...] | None = (
+        None if os.getenv("GRACE_MODEL_FALLBACKS") is None
+        else tuple(m.strip() for m in os.environ["GRACE_MODEL_FALLBACKS"].split(",") if m.strip())
+    )
+    effort: str = os.getenv("GRACE_EFFORT", "high")
+    batch_effort: str = os.getenv("GRACE_BATCH_EFFORT", "medium")
+    max_workers: int = _i("GRACE_MAX_WORKERS", 6)
+    bounds: Bounds = field(default_factory=Bounds)
+
+    # List prices (USD per 1M tokens) for claude-opus-5, used for cost reporting only.
+    price_in_per_mtok: float = 5.0
+    price_out_per_mtok: float = 25.0
+    usd_inr: float = 88.0
+
+
+CONFIG = Config()

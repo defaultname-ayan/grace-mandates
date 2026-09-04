@@ -1,0 +1,10 @@
+{
+  "_provenance": "SYNTHETIC - invented downtime windows used by the simulator to generate bank_technical failures and shown to the adjudicator as evidence. Not real incident data.",
+  "windows": [
+    {"bank": "State Bank of India",  "start": "2026-09-05T18:00:00+00:00", "end": "2026-09-06T04:00:00+00:00", "note": "synthetic core-banking window"},
+    {"bank": "Punjab National Bank", "start": "2026-09-10T19:30:00+00:00", "end": "2026-09-11T02:30:00+00:00", "note": "synthetic maintenance"},
+    {"bank": "Paytm Payments Bank",  "start": "2026-09-15T00:00:00+00:00", "end": "2026-09-15T12:00:00+00:00", "note": "synthetic switch degradation"},
+    {"bank": "Canara Bank",          "start": "2026-09-20T17:00:00+00:00", "end": "2026-09-21T03:00:00+00:00", "note": "synthetic maintenance"},
+    {"bank": "Union Bank of India",  "start": "2026-10-05T18:00:00+00:00", "end": "2026-10-06T05:00:00+00:00", "note": "synthetic maintenance"}
+  ]
+}

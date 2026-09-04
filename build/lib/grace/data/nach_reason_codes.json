@@ -1,0 +1,17 @@
+{
+  "_provenance": "NACH e-mandate rejection reason codes. Structure and the AP6x/AP70 examples follow NPCI circular NPCI/2024-25/NACH/006 (27 Nov 2024, effective 1 Jan 2025), which added 20 codes, revised 33 descriptions and removed 22, as summarised by taxguru. Codes marked source=illustrative are plausible execution-failure reasons used by the simulator and are NOT transcribed from the circular.",
+  "_why_this_file_matters": "The taxonomy MOVED in Jan 2025 and will move again. A hardcoded reason->action mapping goes stale by design; this is the core argument for adjudication over a lookup table.",
+  "codes": [
+    {"code": "AP65", "description": "Account number not linked with given debit card", "family": "instrument", "source": "circular-summary"},
+    {"code": "AP67", "description": "Customer mobile number not available in bank CBS to trigger OTP", "family": "instrument", "source": "circular-summary"},
+    {"code": "AP70", "description": "Time expired for UIDAI OTP", "family": "technical", "source": "circular-summary"},
+    {"code": "M006", "description": "Insufficient funds in the account", "family": "liquidity", "source": "illustrative"},
+    {"code": "M013", "description": "Account closed", "family": "instrument", "source": "illustrative"},
+    {"code": "M014", "description": "Account frozen or dormant", "family": "instrument", "source": "illustrative"},
+    {"code": "M021", "description": "Mandate not registered for this account", "family": "instrument", "source": "illustrative"},
+    {"code": "M028", "description": "Debit amount exceeds the mandate limit", "family": "limit", "source": "illustrative"},
+    {"code": "M031", "description": "Payment stopped by drawer", "family": "customer", "source": "illustrative"},
+    {"code": "M045", "description": "Technical failure at destination bank", "family": "technical", "source": "illustrative"},
+    {"code": "M052", "description": "Mandate cancelled by customer at bank", "family": "customer", "source": "illustrative"}
+  ]
+}
