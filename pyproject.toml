@@ -15,11 +15,12 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-llm  = ["anthropic>=1.0"]
+llm  = ["google-genai>=2.0"]                     # default provider (Gemini)
+anthropic = ["anthropic>=1.0"]                   # optional alternate provider
 live = ["razorpay>=1.4", "httpx>=0.27"]
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
 dev  = ["pytest>=8.0"]
-all  = ["anthropic>=1.0", "razorpay>=1.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.29", "pytest>=8.0"]
+all  = ["google-genai>=2.0", "anthropic>=1.0", "razorpay>=1.4", "httpx>=0.27", "fastapi>=0.110", "uvicorn>=0.29", "pytest>=8.0"]
 
 [project.scripts]
 grace = "grace.cli:app"

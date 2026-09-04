@@ -50,6 +50,22 @@ what — if anything — actually happens:
 Every override is recorded as a flag in the audit trail and totalled in the report. There is no
 silent correction anywhere in this system.
 
+## Provider independence
+
+`grace/adjudicate/` has three interchangeable implementations behind one `decide(evidence) ->
+Decision` interface: `GeminiAdjudicator` (default), `ClaudeAdjudicator`, and `OfflineAdjudicator`
+(deterministic, no network). `make_llm_adjudicator()` dispatches on `GRACE_PROVIDER`.
+
+This matters more than it looks. Because the adjudicator only proposes, and the rail matrix, bounds,
+stopping rules and integrity guard sit downstream of it, **changing provider cannot change what the
+system is permitted to do.** A provider swap changes the quality of the proposal and nothing else —
+which is also why the same contract tests in `tests/test_adjudicator.py` apply to all three.
+
+Gemini-specific handling worth noting: a refusal arrives as a `finish_reason` on a candidate (or
+`prompt_feedback.block_reason`) inside an otherwise well-formed response, not as an exception. It is
+raised as `GeminiRefusal` and never retried — it is a decision, not a fault. `MAX_TOKENS` is
+detected separately, because a truncated response yields unparsable JSON rather than an error.
+
 ## Why a simulator
 
 Razorpay test mode cannot force individual decline reasons, its subscription tokens expire in three
@@ -64,7 +80,9 @@ Two runs with the same seed produce byte-identical event streams.
 
 | Failure mode | Detection | Fallback |
 |---|---|---|
-| Claude unavailable, rate-limited, or refusing | exception / `stop_reason == "refusal"` | `safe_default` → escalate, never act. Batch continues; rate reported as `adjudicator_fallback_rate` |
+| LLM unavailable or rate-limited | exception / retries exhausted | `safe_default` → escalate, never act. Batch continues; rate reported as `adjudicator_fallback_rate` |
+| LLM refuses (Gemini `finish_reason=SAFETY`/blocked prompt; Claude `stop_reason="refusal"`) | explicit check before parsing | raised, not retried; the mandate escalates |
+| Response truncated at `max_output_tokens` | Gemini `finish_reason=MAX_TOKENS` | error rather than a silently unparsable reply |
 | Model proposes an out-of-policy action | rail × status matrix in `gate()` | override to `escalate`, flagged and counted |
 | Model returns wild values (confidence 9.0, 99 cycles) | `Decision.clamped()` | coerced to valid ranges before policy sees them |
 | Webhook duplicate or out-of-order | event id primary key; events read back time-ordered | idempotent no-op; `{"duplicate": true}` |

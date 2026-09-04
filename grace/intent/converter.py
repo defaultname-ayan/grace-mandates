@@ -64,10 +64,10 @@ def convert(
             adj = OfflineAdjudicator(today=today, calendar=cal)
             name = "offline_stub"
         else:
-            from grace.adjudicate.claude import ClaudeAdjudicator
+            from grace.adjudicate import make_llm_adjudicator
 
-            adj = ClaudeAdjudicator()
-            name = f"claude:{adj.model}"
+            adj = make_llm_adjudicator()
+            name = f"{adj.name}:{adj.model}"
 
         decision = adj.decide(ev)
         engine = SimEngine(store, seed=CONFIG.seed, bank_health=bh, calendar=cal,

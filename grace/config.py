@@ -38,7 +38,10 @@ class Config:
     seed: int = _i("GRACE_SEED", 20260905)
     theta_low: float = _f("GRACE_THETA_LOW", 0.15)
     theta_high: float = _f("GRACE_THETA_HIGH", 0.60)
-    model: str = os.getenv("GRACE_MODEL", "claude-opus-5")
+    #: "gemini" (default) or "anthropic". Both implement the same adjudicator
+    #: interface; the policy layer is identical either way.
+    provider: str = os.getenv("GRACE_PROVIDER", "gemini").lower()
+    model: str = os.getenv("GRACE_MODEL", "")  # empty -> the provider's default
     effort: str = os.getenv("GRACE_EFFORT", "high")
     batch_effort: str = os.getenv("GRACE_BATCH_EFFORT", "medium")
     max_workers: int = _i("GRACE_MAX_WORKERS", 6)

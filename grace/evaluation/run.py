@@ -24,10 +24,10 @@ def make_adjudicator(arm: str, *, offline: bool, today: date, effort: str | None
         return RulesBaseline(today=today, calendar=HolidayCalendar()), "rules_baseline"
     if offline:
         return OfflineAdjudicator(today=today, calendar=HolidayCalendar()), "offline_stub"
-    from grace.adjudicate.claude import ClaudeAdjudicator
+    from grace.adjudicate import make_llm_adjudicator
 
-    adj = ClaudeAdjudicator(effort=effort)
-    return adj, f"claude:{adj.model}:{adj.effort}"
+    adj = make_llm_adjudicator(effort=effort)
+    return adj, f"{adj.name}:{adj.model}:{adj.effort}"
 
 
 def run_all(

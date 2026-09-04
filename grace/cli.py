@@ -87,22 +87,24 @@ def run_batch_cmd(
 
     arm_tuple = tuple(a.strip() for a in arms.split(",") if a.strip())
     if not offline:
-        import os
+        from grace.adjudicate import credentials_present, sdk_present
 
-        if not (os.getenv("ANTHROPIC_API_KEY") or os.getenv("ANTHROPIC_AUTH_TOKEN")):
-            typer.secho(
-                "--online needs credentials: set ANTHROPIC_API_KEY (or run `ant auth login`).\n"
-                "The Anthropic client does not fail at construction, so without this check every "
-                "adjudication would quietly fall back to escalate and the run would look successful.",
-                fg="red")
+        ok, why = sdk_present()
+        if not ok:
+            typer.secho(why, fg="red")
             raise typer.Exit(2)
-        try:
-            import anthropic  # noqa: F401
-        except ImportError:
-            typer.secho("--online needs the anthropic SDK: pip install -e \".[llm]\"", fg="red")
-            raise typer.Exit(2) from None
+        ok, why = credentials_present()
+        if not ok:
+            typer.secho(why, fg="red")
+            typer.secho(
+                "Checked before the run starts: with GRACE_PROVIDER=anthropic the client does "
+                "not raise without a key, so every adjudication would fall back to escalate and "
+                "the run would still exit 0 and look successful.",
+                fg="yellow")
+            raise typer.Exit(2)
         effort = effort or CONFIG.batch_effort
-        typer.secho(f"ONLINE: calling {CONFIG.model} at effort={effort}. This costs money.", fg="yellow")
+        typer.secho(f"ONLINE: provider={CONFIG.provider} effort={effort}. This costs money.",
+                    fg="yellow")
 
     def progress(arm, i, total):
         if total and (i % 25 == 0 or i == total):
@@ -344,6 +346,89 @@ def serve(port: int = typer.Option(8000), run: str = typer.Option("demo")) -> No
 
     os.environ["GRACE_RUN"] = run
     uvicorn.run("grace.app:app", host="127.0.0.1", port=port, log_level="info")
+
+
+@app.command("check-llm")
+def check_llm(
+    run: str = typer.Option("demo"),
+    mandate_id: str = typer.Option(None, help="Which mandate to adjudicate (default: first at-risk)."),
+    effort: str = typer.Option(None, help="minimal | low | medium | high."),
+) -> None:
+    """One real LLM call on one mandate. The cheapest way to prove the online path."""
+
+    from grace.adjudicate import credentials_present, make_llm_adjudicator, sdk_present
+    from grace.evidence import build_evidence
+    from grace.orchestrator import arm_db_path
+    from grace.predict.features import featurise
+    from grace.predict.risk import LogisticRisk
+    from grace.signals.bank_health import BankHealth
+    from grace.signals.holidays import HolidayCalendar
+    from grace.store import Store
+
+    for ok, why in (sdk_present(), credentials_present()):
+        if not ok:
+            typer.secho(why, fg="red")
+            raise typer.Exit(2)
+
+    rd = _run_dir(run)
+    db = arm_db_path(rd, "agent")
+    if not db.exists():
+        db = rd / "grace.db"
+    if not db.exists():
+        typer.secho(f"No cohort at {rd}. Run `grace seed --run {run}` first.", fg="red")
+        raise typer.Exit(1)
+
+    s = Store(db)
+    try:
+        target = None
+        if mandate_id:
+            target = s.get_mandate(mandate_id)
+        else:
+            for m in s.all_mandates():
+                t = s.get_truth(m.id)
+                if t and t.will_fail:
+                    target = m
+                    break
+        if target is None:
+            typer.secho("No suitable mandate found.", fg="red")
+            raise typer.Exit(1)
+
+        bh, cal = BankHealth(), HolidayCalendar()
+        t = s.get_truth(target.id)
+        ev0 = build_evidence(s, target, bank_health=bh, calendar=cal,
+                             today=DEFAULT_DECISION_DATE,
+                             cancel_intent_text=t.cancel_intent_text if t else None)
+        w = rd / "risk_weights.json"
+        p, tau = 0.0, 0.60
+        if w.exists():
+            mdl = LogisticRisk.load(w)
+            p, tau = mdl.predict(featurise(ev0)), mdl.preemptive_threshold
+        ev = ev0.model_copy(update={"p_fail": p, "preemptive_threshold": tau})
+    finally:
+        s.close()
+
+    adj = make_llm_adjudicator(effort=effort)
+    typer.secho(f"Calling {adj.name}:{adj.model} (effort={adj.effort}) on {target.id}...", fg="cyan")
+    d = adj.decide(ev)
+    meta = adj.metas[-1] if adj.metas else {}
+
+    typer.secho("\nDecision", fg="green", bold=True)
+    _echo_kv("cause", f"{d.cause.value} ({d.cause_confidence:.2f})")
+    _echo_kv("action", f"{d.action.value} ({d.action_confidence:.2f})")
+    _echo_kv("escalate", d.escalate)
+    _echo_kv("rationale", d.rationale)
+    _echo_kv("evidence used", d.evidence_used)
+    if d.customer_message:
+        _echo_kv("to customer", d.customer_message)
+    typer.secho("\nCall", fg="green", bold=True)
+    for k in ("model", "thinking_level", "input_tokens", "output_tokens",
+              "thinking_tokens", "cache_read_input_tokens", "latency_ms", "request_id"):
+        if k in meta:
+            _echo_kv(k, meta[k])
+    if t:
+        typer.secho(f"\n(ground truth for this mandate: {t.cause.value}, "
+                    f"at_risk={t.will_fail})", fg="yellow")
+    typer.secho("\nOnline path verified.", fg="green", bold=True)
 
 
 @app.command("day1")

@@ -128,9 +128,12 @@ counterfactual net value. The holdout was never consulted for it.
 - **No live Razorpay call has been made.** No test-mode credentials were available in this
   environment. `grace live-demo` and `scripts/day1_live_checks.py` are written and import-clean but
   have never run against the real API. Run them first; see `docs/WHAT-BROKE.md`.
-- **No live Claude call has been made.** No `ANTHROPIC_API_KEY` was available. The request shape,
-  retry/refusal handling and clamping are verified against a fake SDK in
-  `tests/test_claude_adjudicator.py`, but the model's judgement quality is unmeasured.
+- **No live LLM call has been made.** No `GEMINI_API_KEY` was available in the build environment.
+  The request shape, `thinking_level`, structured-output schema conversion, refusal handling
+  (`finish_reason` / blocked prompt), truncation, retry policy and output clamping are all verified
+  against a fake SDK in `tests/test_gemini_adjudicator.py` (22 tests) and
+  `tests/test_claude_adjudicator.py` (9 tests) — but **the model's judgement quality is
+  unmeasured**. `grace check-llm` proves the path in one call.
 - Three open questions are listed in [Known unknowns](#known-unknowns).
 
 ---
@@ -148,7 +151,7 @@ python -m venv .venv && .venv/bin/pip install -e .      # 3 dependencies: pydant
 Everything above runs offline. Optional extras:
 
 ```bash
-.venv/bin/pip install -e ".[llm]"      # anthropic  -> grace run-batch --online
+.venv/bin/pip install -e ".[llm]"      # google-genai -> grace run-batch --online
 .venv/bin/pip install -e ".[live]"     # razorpay   -> grace live-demo, grace day1
 .venv/bin/pip install -e ".[serve]"    # fastapi    -> grace serve
 .venv/bin/pip install -e ".[dev]"      # pytest     -> 106 tests, ~0.4s
@@ -196,6 +199,23 @@ Verify    next cycle: did the mandate survive?
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
+## Provider
+
+Default: **Gemini** `gemini-3.8-flash`, with `thinking_level` mapped from Grace's effort setting and
+structured output via `response_schema=Decision`. Two Gemini-3 specifics are handled deliberately
+and would otherwise be silent bugs:
+
+- reasoning depth is `thinking_level`, not the legacy `thinking_budget`; **sending both is a 400**,
+  so Grace only ever sends `thinking_level`;
+- **temperature is left unset.** Google's Gemini 3 guidance is to keep it at the default 1.0;
+  lowering it can cause looping and degrade reasoning. Grace's determinism comes from the policy
+  layer, not from sampling.
+
+Claude (`claude-opus-5`) is available as an alternate via `GRACE_PROVIDER=anthropic`. Because the
+adjudicator only ever *proposes* — the rail matrix, bounds and integrity guard are provider-
+independent — swapping providers cannot change what the system is allowed to do. Only the quality
+of the proposal changes.
+
 ## Why an LLM is the right tool here
 
 Not because a rules engine can't decide — the baseline in the results table *is* a rules engine, and
@@ -231,7 +251,7 @@ opposite correct action.** See `tests/test_adjudicator.py::CASES` — `remap_in_
 grace/sim/          simulator: state machine, cohort generator, reason vocabularies
 grace/signals/      bank health, salary cycle, RBI holiday calendar
 grace/predict/      features + calibrated logistic regression + threshold tuning
-grace/adjudicate/   schema, prompt, Claude client, deterministic offline stub
+grace/adjudicate/   schema, prompt, Gemini + Claude clients, deterministic offline stub
 grace/policy/       rail x status matrix, bounds, the gate
 grace/integrity/    double-debit guard
 grace/rzp/          Razorpay client (live + simulated), webhook receiver

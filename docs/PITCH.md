@@ -41,6 +41,14 @@ Pick the demo mandates first — they change with the seed:
 .venv/bin/python -m scripts.pick_demo_cases --run demo
 ```
 
+## Say this if asked "which model?"
+
+Gemini 3.8 Flash by default, Claude Opus 5 behind one environment variable. The point is that it
+does not matter: the adjudicator only *proposes*. The rail matrix, the bounds, the stopping rules
+and the double-debit guard are provider-independent and sit downstream, so swapping the model cannot
+change what the system is allowed to do — only how good the proposal is. That is the same reason the
+offline stub can stand in for either one in CI.
+
 ## Say this if asked "why not just rules?"
 
 Point at `tests/test_adjudicator.py`, cases `remap_in_flight_card` and `genuine_expiry_new_customer`.

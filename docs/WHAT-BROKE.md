@@ -89,6 +89,29 @@ action. Requiring **both** a high calibrated risk and at least one prior failure
 **no loss in preservation**, and improved action regret. Worth stating plainly: the first version
 was worse than the second in every respect, and the metric is what showed it.
 
+## 9. Switching provider surfaced two Gemini-3 traps
+
+Moving the default from Claude to Gemini, verified against `google-genai` 2.22.0 by introspection
+rather than recall:
+
+- **`thinking_level` vs `thinking_budget`.** Gemini 3 replaced the budget parameter with a level
+  (`minimal|low|medium|high`). The legacy one still works, but **sending both is a 400.** Grace
+  sends only `thinking_level`, mapped from its own effort setting.
+- **Temperature.** The instinct is to lower it for a decision engine. Google's Gemini 3 guidance is
+  the opposite: keep it at the default 1.0, because lowering it can cause looping and degrade
+  reasoning on hard tasks. Grace leaves it unset. Determinism comes from the policy gate, not from
+  sampling.
+
+Also worth recording, because it changes what the credential pre-check is *for*: `google-genai`
+**raises at construction** without a key, while the Anthropic client does not. So a Gemini run fails
+fast on its own; an unchecked Anthropic run would have fallen back to escalate on every mandate and
+still exited 0 looking successful. The pre-check exists for the second case.
+
+The flattened `Decision` schema paid off here: it converted to Gemini's schema format with all 12
+properties and both enums intact, first try. Nested optional objects and tight JSON-Schema
+constraints are the two things most likely to fail in structured-output conversion, and neither was
+present.
+
 ---
 
 ## Day-1 live API checks — NOT YET RUN
@@ -107,8 +130,9 @@ The simulator encodes the documented answer to (4) and assumes for (1) that resu
 the next cycle boundary at or after the resume date. **If the live check contradicts that, the
 simulator is wrong and this file should say so.**
 
-Likewise, no live Claude call has been made — no `ANTHROPIC_API_KEY` was available. The request
-shape, retry, refusal and clamping paths are verified against a fake SDK
-(`tests/test_claude_adjudicator.py`); the model's judgement quality is unmeasured.
+Likewise **no live LLM call has been made** — no `GEMINI_API_KEY` was available. Request shape,
+thinking level, schema conversion, refusal/truncation detection, retry policy and clamping are
+verified against a fake SDK (`tests/test_gemini_adjudicator.py`, 22 tests); the model's judgement
+quality is unmeasured. `grace check-llm` proves the path in a single call — run it first.
 - `2026-09-04 08:10 UTC` Day-1 live checks SKIPPED: no RAZORPAY_KEY_ID in the environment.
 - `2026-09-04 08:10 UTC` Day-1 live checks SKIPPED: no RAZORPAY_KEY_ID in the environment.
