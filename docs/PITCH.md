@@ -17,7 +17,7 @@ before recording so the figures on screen match.
 | **3:45** | Audit row with `model_out_of_policy` / `human_required` | "Case D: thin evidence, or an action outside what the rail permits. The model proposes; code disposes. Every override is counted in the report — nothing is silent." |
 | **4:05** | Report results table | "Holdout only. Against doing nothing: 24 mandates preserved versus 15. Against the rules baseline I'd have written without an LLM — run through the *same* guardrails — 24 versus 20, cause accuracy 83% versus 59%, regret down a third." |
 | **4:25** | Point at the false-intervention row | "And here's what it cost. Thirty percent of the agent's interventions landed on mandates that would have paid anyway. The baseline's is zero, because it only reacts to failures that already happened. Net of that harm the agent is still ahead — seventy-three thousand against fifty-two — but I'd rather show you the number than hide it." |
-| **4:45** | `docs/WHAT-BROKE.md` | "What broke: my holdout leaked because Python's hash is per-process randomised. Cohort generation took two minutes until I found I was doing eighteen thousand fsyncs. And the product's core claim was unreachable for a while — every at-risk mandate was already PENDING, so the pre-emptive pause could never fire. The metric is what caught it." |
+| **4:45** | `docs/WHAT-BROKE.md` | "What broke: my holdout leaked because Python's hash is per-process randomised. The product's core claim was unreachable for a while — every at-risk mandate was already PENDING, so the pre-emptive pause could never fire; the metric caught it. And when I finally pointed it at a real Razorpay test account, the entire Subscriptions API returned 401 — it's gated behind KYC. Which is exactly why the simulator exists." |
 
 ## Closing line
 
@@ -40,6 +40,22 @@ Pick the demo mandates first — they change with the seed:
 ```bash
 .venv/bin/python -m scripts.pick_demo_cases --run demo
 ```
+
+## Say this if asked "did you actually run it against anything real?"
+
+Yes, and both answers are in the repo.
+
+**Gemini:** `grace check-llm` makes a real call. On a UPI mandate the customer had already paused,
+it returned `customer_intent_temporary` (correct), chose `noop`, cited the rule that only the
+customer can resume a customer-paused UPI mandate, and replied in Hinglish because the customer
+wrote in Hinglish. Then a 60-mandate online sample where the agent **tied** the rules baseline on
+revenue but used half the interventions — shown in the README, not hidden.
+
+**Razorpay:** ran `grace day1` against a real test account. The Subscriptions API returns **401 on
+both reads and writes** while `/payments`, `/orders`, `/invoices` and `/settlements` all return 200
+with the same key. Razorpay gates Subscriptions behind full account activation. That is the single
+best argument for the simulator: the product surface this is built on is unreachable from a fresh
+test account, so a simulator is not a shortcut, it is the only way in before KYC clears.
 
 ## Say this if asked "which model?"
 

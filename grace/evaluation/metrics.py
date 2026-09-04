@@ -29,9 +29,12 @@ def _rupees(m) -> int:
     return m.plan_amount_paise * min(3, m.remaining_count)
 
 
-def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True) -> dict:
+def evaluate_arm(store: Store, arm: str, *, holdout_only: bool = True,
+                 only_ids: set[str] | None = None) -> dict:
     decisions = store.decisions_for_arm(arm)
     ids = store.holdout_ids() if holdout_only else {m.id for m in store.all_mandates()}
+    if only_ids is not None:
+        ids = ids & only_ids
 
     n = adjudicated = escalations = interventions = false_interventions = 0
     preserved = preserved_rupees = at_risk = at_risk_rupees = 0

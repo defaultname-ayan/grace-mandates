@@ -38,6 +38,8 @@ def run_all(
     guard_enabled: bool = True,
     effort: str | None = None,
     limit: int | None = None,
+    holdout_only: bool = False,
+    sample: int | None = None,
     arms: tuple[str, ...] = ARMS,
     max_workers: int | None = None,
     on_progress=None,
@@ -48,13 +50,15 @@ def run_all(
         workers = 1 if (arm != "agent" or offline) else (max_workers or CONFIG.max_workers)
         summaries[arm] = run_batch(
             run_dir, arm, adj, decision_date=decision_date, guard_enabled=guard_enabled,
-            max_workers=workers, limit=limit, adjudicator_name=name,
+            max_workers=workers, limit=limit, holdout_only=holdout_only, sample=sample,
+            adjudicator_name=name,
             on_progress=(lambda i, t, a=arm: on_progress(a, i, t)) if on_progress else None,
         )
     return summaries
 
 
-def score(run_dir: Path, arms: tuple[str, ...] = ARMS) -> dict:
+def score(run_dir: Path, arms: tuple[str, ...] = ARMS,
+          restrict_to: set[str] | None = None) -> dict:
     results: dict[str, dict] = {}
     predictor = {}
     manifest = {}
@@ -65,7 +69,7 @@ def score(run_dir: Path, arms: tuple[str, ...] = ARMS) -> dict:
             continue
         s = Store(db)
         try:
-            results[arm] = evaluate_arm(s, arm, holdout_only=True)
+            results[arm] = evaluate_arm(s, arm, holdout_only=True, only_ids=restrict_to)
             summaries[arm] = s.get_meta(f"summary_{arm}", {})
             results[arm]["batch"] = summaries[arm]
             if not predictor:

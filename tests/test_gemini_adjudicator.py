@@ -230,14 +230,20 @@ def test_rate_limit_is_retried(monkeypatch):
     assert len(calls) == 2
 
 
-def test_client_error_other_than_429_is_not_retried(monkeypatch):
+def test_client_error_other_than_429_is_not_retried_within_a_model(monkeypatch):
+    """A 400 is not transient, so it must not be retried against the same model.
+
+    It IS worth trying the next model: 'Thinking level is not supported' is a
+    real, model-specific 400 that the fallback chain should survive.
+    """
     from grace.adjudicate.gemini import AdjudicationError
 
     adj, calls, _ = make(monkeypatch, lambda n, kw: (_ for _ in ()).throw(
-        sys.modules["google.genai.errors"].ClientError("400 bad model", 400)))
+        sys.modules["google.genai.errors"].ClientError("400 bad request", 400)))
     with pytest.raises(AdjudicationError):
         adj.adjudicate(sample_evidence())
-    assert len(calls) == 1
+    assert len(calls) == len(adj.model_chain), "one attempt per model, no retries within one"
+    assert len({c["model"] for c in calls}) == len(adj.model_chain), "each model tried once"
 
 
 def test_exhausted_retries_raise(monkeypatch):
@@ -282,3 +288,81 @@ def test_unknown_provider_is_rejected():
 
     with pytest.raises(ValueError, match="unknown GRACE_PROVIDER"):
         make_llm_adjudicator("openai")
+
+
+# ------------------------------------------------- model-family compatibility
+@pytest.mark.parametrize("model,expected", [
+    ("gemini-3.8-flash", True), ("gemini-3.5-flash", True), ("gemini-3.1-flash-lite", True),
+    ("models/gemini-3.7-flash", True),
+    ("gemini-2.5-flash", False), ("gemini-2.5-pro", False), ("gemini-2.0-flash", False),
+    ("gemini-flash-latest", False), ("", False),
+])
+def test_thinking_level_only_sent_to_models_that_accept_it(model, expected):
+    """gemini-2.5-flash returns 400 'Thinking level is not supported'.
+    Verified live before this guard existed."""
+    from grace.adjudicate.gemini import supports_thinking_level
+
+    assert supports_thinking_level(model) is expected
+
+
+def test_config_omits_thinking_level_on_gemini_2x(monkeypatch):
+    adj, calls, _ = make(monkeypatch, lambda n, kw: FakeResp(), model="gemini-2.5-flash")
+    adj.adjudicate(sample_evidence())
+    cfg = calls[0]["config"]
+    assert cfg.thinking_config is None, "sending thinking_level to a 2.x model is a 400"
+    assert cfg.response_schema is Decision, "structured output still applies"
+
+
+def test_config_includes_thinking_level_on_gemini_3x(monkeypatch):
+    adj, calls, _ = make(monkeypatch, lambda n, kw: FakeResp(), model="gemini-3.8-flash")
+    adj.adjudicate(sample_evidence())
+    assert calls[0]["config"].thinking_config is not None
+
+
+def test_backoff_grows_and_is_jittered(monkeypatch):
+    adj, _, _ = make(monkeypatch, lambda n, kw: FakeResp())
+    assert adj._backoff(0) < adj._backoff(4) <= 30.0 * 1.4
+    assert len({round(adj._backoff(2), 6) for _ in range(20)}) > 1, "must be jittered"
+
+
+# ------------------------------------------------------------ fallback chain
+def test_falls_back_to_the_next_model_when_one_is_overloaded(monkeypatch):
+    """503 'high demand' on the free tier is not fixable by backoff."""
+    def behaviour(n, kw):
+        if kw["model"] == "gemini-3.8-flash":
+            raise sys.modules["google.genai.errors"].ServerError("503 high demand", 503)
+        return FakeResp()
+
+    adj, calls, _ = make(monkeypatch, behaviour, max_retries=1)
+    d, meta = adj.adjudicate(sample_evidence())
+    assert d.action == Action.PAUSE
+    assert meta["model"] == "gemini-3.7-flash", "served by the next model down"
+    assert meta["requested_model"] == "gemini-3.8-flash"
+    assert meta["fallback_depth"] == 1, "the report must be able to see this happened"
+
+
+def test_refusal_is_never_shopped_to_another_model(monkeypatch):
+    """A safety decision is a decision. Retrying it elsewhere would be
+    laundering a refusal, not recovering from a fault."""
+    from grace.adjudicate.gemini import GeminiRefusal
+
+    adj, calls, _ = make(monkeypatch,
+                         lambda n, kw: FakeResp(parsed=None, finish_reason="SAFETY"))
+    with pytest.raises(GeminiRefusal):
+        adj.adjudicate(sample_evidence())
+    assert len(calls) == 1, "must not try the next model after a refusal"
+
+
+def test_all_models_failing_raises_clearly(monkeypatch):
+    from grace.adjudicate.gemini import AdjudicationError
+
+    adj, _, _ = make(monkeypatch, lambda n, kw: (_ for _ in ()).throw(
+        sys.modules["google.genai.errors"].ServerError("503", 503)), max_retries=0)
+    with pytest.raises(AdjudicationError, match=r"all \d+ models"):
+        adj.adjudicate(sample_evidence())
+
+
+def test_successful_first_model_records_zero_fallback_depth(monkeypatch):
+    adj, _, _ = make(monkeypatch, lambda n, kw: FakeResp())
+    _, meta = adj.adjudicate(sample_evidence())
+    assert meta["fallback_depth"] == 0 and meta["model"] == meta["requested_model"]

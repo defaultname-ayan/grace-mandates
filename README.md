@@ -82,6 +82,48 @@ at-risk mandates that survive. Survival is drawn from the cohort's counterfactua
 **common random numbers** — every mandate gets one fixed uniform shared across all three arms, so
 the arms differ only by the action they chose, never by luck.
 
+### Live model result (60-mandate online sample)
+
+The table above ran the deterministic offline stub. Below is a **real Gemini run** on a
+deterministic 60-mandate subset of the holdout, with every arm scored on exactly those 60 so the
+comparison stays paired. Reproduce with:
+
+```bash
+grace run-batch --run demo --online --arms agent --sample 60 --workers 2
+grace eval --run demo --on-sample
+```
+
+| Metric | do nothing | rules baseline | **agent (Gemini)** |
+|---|---|---|---|
+| Mandates scored | 60 | 60 | 60 |
+| At risk | 30 | 30 | 30 |
+| Mandates preserved | 4 | **7** | **7** |
+| Rupees preserved | Rs 22,488 | **Rs 68,379** | **Rs 68,379** |
+| Interventions | 0 | 12 | **6** |
+| False-intervention rate | – | 0.0% | 0.0% |
+| Escalation rate | 0.0% | 18.3% | 8.3% |
+| Cause accuracy | 0.0% | 59.99% | **73.3%** |
+| Action regret (lower better) | 0.2311 | 0.1784 | **0.1759** |
+
+**On this sample the agent does NOT beat the rules baseline on revenue preserved — it ties it.**
+Same 7 mandates preserved, same Rs 68,379. What it does differently is get there with **half the
+interventions** (6 vs 12), a higher cause accuracy (73.3% vs 60.0%), and less than half the
+escalation rate. Same outcome, half the customer contact.
+
+That is a genuinely weaker result than the offline table suggests, and it is the honest one. Three
+things to weigh before reading anything into it:
+
+- **n is small.** 60 mandates, 30 at risk. Nowhere near enough to separate two arms on a rupee
+  total; the interventions and cause-accuracy gaps are the only differences with any margin.
+- **It was served by a lite model.** 59 of 60 calls went to `gemini-3.5-flash-lite` and 1 to
+  `gemini-3.1-flash-lite` (the fallback chain firing in production), because free-tier quota for the
+  flash tier was exhausted. This is not a `gemini-3.8-flash` result and is not presented as one.
+- **Cost:** 109,043 input + 13,196 output + 55,869 thinking tokens, 9.4s mean latency.
+
+The policy layer earned its place here on real model output: `param_rewritten` x3 (dates
+re-derived), `human_required` x2, and **`cancel_cause_gate` x1 — the model proposed cancelling a
+subscription and code refused it** for insufficient cause confidence.
+
 ### Integrity
 
 | | do nothing | baseline | agent |
@@ -123,17 +165,36 @@ counterfactual net value. The holdout was never consulted for it.
   is an assumption. It is printed in full in the report so you can disagree with it.
 - Failure-rate assumptions (UPI Autopay 8–15%, cards 2–3%) come from a PSP blog, not NPCI.
 
-### What is not verified
+### What has been verified live, and what has not
 
-- **No live Razorpay call has been made.** No test-mode credentials were available in this
-  environment. `grace live-demo` and `scripts/day1_live_checks.py` are written and import-clean but
-  have never run against the real API. Run them first; see `docs/WHAT-BROKE.md`.
-- **No live LLM call has been made.** No `GEMINI_API_KEY` was available in the build environment.
-  The request shape, `thinking_level`, structured-output schema conversion, refusal handling
-  (`finish_reason` / blocked prompt), truncation, retry policy and output clamping are all verified
-  against a fake SDK in `tests/test_gemini_adjudicator.py` (22 tests) and
-  `tests/test_claude_adjudicator.py` (9 tests) — but **the model's judgement quality is
-  unmeasured**. `grace check-llm` proves the path in one call.
+**Gemini — verified.** `grace check-llm` makes a real call and returns a correct decision. On a
+UPI mandate the customer had already paused, it identified `customer_intent_temporary` (matching
+ground truth), chose `noop`, cited the rule that only the customer can resume a customer-paused UPI
+mandate, and wrote the customer message in Hinglish because the customer's own message was in
+Hinglish. Reproduce with `export GEMINI_API_KEY=... && grace check-llm --run demo`.
+
+**Razorpay — blocked, and the block is itself a finding.** Ran against a real test account with
+freshly generated test-mode keys. With the same key, `/payments`, `/orders`, `/invoices` and
+`/settlements` all return **200**, while `/plans` and `/subscriptions` return **401 Unauthorized**
+for both reads and writes. Razorpay gates the Subscriptions API behind full account activation
+(KYC, 24-48h); the dashboard onboarding flow does not lift it. **The entire product surface Grace
+is built on is unreachable from a fresh test account** — which is the strongest available argument
+that the simulator is a necessity rather than a convenience. Details in
+[`docs/WHAT-BROKE.md`](docs/WHAT-BROKE.md) §10. Re-run `grace day1` once the account activates.
+
+**Still unmeasured:** the model's *judgement quality at scale*. Free-tier quota (see below) makes a
+full 380-call holdout batch impractical, so the headline table remains the offline one. The three
+known-unknowns about `resume`, `pause_initiated_by` and pause availability stay unanswered until
+the Razorpay account activates.
+
+### Free-tier quota shapes what an online run can be
+
+Measured, not assumed: `gemini-3.8-flash` returns intermittent `503 UNAVAILABLE`; after roughly one
+batch's traffic the whole flash tier returns `429 RESOURCE_EXHAUSTED` (the daily quota is shared);
+the lite tier sustains **under ~7 successful requests/minute**. Grace handles this with a model
+fallback chain that records `served_by` per call, and `--sample N` for a deterministic online subset
+scored paired against every other arm (`grace eval --on-sample`). A run served by fallback models is
+reported as such and never presented as a flagship-model result.
 - Three open questions are listed in [Known unknowns](#known-unknowns).
 
 ---

@@ -112,12 +112,84 @@ properties and both enums intact, first try. Nested optional objects and tight J
 constraints are the two things most likely to fail in structured-output conversion, and neither was
 present.
 
+## 10. Razorpay Subscriptions is 401 on a fresh test account — the simulator's whole justification, confirmed
+
+Ran `grace day1` against a real Razorpay test account with freshly generated
+test-mode keys. It failed, and the way it failed is the most useful result in this file.
+
+The credentials are fine. With the *same key*:
+
+| Endpoint | Result |
+|---|---|
+| `GET /v1/payments` | **200** |
+| `GET /v1/orders` | **200** |
+| `GET /v1/invoices` | **200** |
+| `GET /v1/settlements` | **200** |
+| `GET /v1/plans` | **401 Unauthorized** |
+| `GET /v1/subscriptions` | **401 Unauthorized** |
+| `POST /v1/plans` | **401 Unauthorized** |
+
+Reads *and* writes on the Subscriptions API are refused while every other core
+product answers normally. Clicking through the Subscriptions onboarding in the
+dashboard ("Skip And Get Started") did not change it. Razorpay gates the
+Subscriptions API behind **full account activation (KYC)**, which takes 24-48
+hours and cannot be self-served — the dashboard says as much: *"You are in Test
+Mode... Activate your account to start making live transactions."*
+
+**So the entire product surface Grace is built on is unreachable from a fresh
+test account.** Every interesting decision — the retry ladder, the pause-only-
+from-ACTIVE rule, the eMandate confirmation race — is unexercisable live until
+Razorpay approves the account. This is the strongest possible argument for the
+simulator: it is not a convenience, it is the only way to build against
+Subscriptions before activation clears.
+
+Two fixes came out of it:
+
+- `grace day1` used to surface this as a bare `ServerError` traceback from deep
+  inside the razorpay SDK, with the message swallowed. It now probes core vs
+  subscriptions endpoints first and reports the diagnosis in one line.
+- `LiveClient` gained `SubscriptionsNotEnabled`, so the condition is a named,
+  catchable state rather than an opaque 401.
+
+**Still open, and honestly so:** questions 1-3 below cannot be answered until
+the account activates. The simulator's assumptions about them are documented
+and unverified.
+
+## 11. Gemini free-tier quota is the real constraint on an online batch
+
+The online path works — `grace check-llm` returned a correct decision on a real
+mandate, in Hinglish because the customer's message was in Hinglish. Scaling it
+up is what broke.
+
+- `gemini-3.8-flash` returned `503 UNAVAILABLE - this model is currently
+  experiencing high demand`, intermittently, and no backoff fixes an overloaded
+  model. Hence the fallback chain.
+- After roughly one batch's worth of traffic, the whole flash tier
+  (3.8 / 3.7 / 3.5) returned **`429 RESOURCE_EXHAUSTED`** — the free-tier daily
+  quota is shared across them. Only the *lite* models still served.
+- Measured sustained throughput on the lite tier was **under ~7 successful
+  requests per minute**, so a 380-call holdout batch is an hour-plus and kept
+  stalling.
+- Two concurrent workers still rate-limited each other into constant backoff;
+  the earlier four made it worse, not better.
+
+Rather than fake a full online run or quietly report a truncated one, `--sample N`
+takes a **deterministic** subset of triggered holdout mandates and `grace eval
+--on-sample` scores *every* arm on exactly that subset, so the comparison stays
+paired. The full-holdout table stays the offline one, which is complete and
+reproducible.
+
+A related bug this exposed: progress was only printed after the whole thread
+pool drained, so a 40-minute online run looked frozen. It now reports as each
+call lands.
+
 ---
 
-## Day-1 live API checks — NOT YET RUN
+## Day-1 live API checks — BLOCKED ON ACCOUNT ACTIVATION
 
-`scripts/day1_live_checks.py` is written and import-clean but **has never been run**: no Razorpay
-test-mode credentials were available in this environment. Run `grace day1` first. It answers:
+`scripts/day1_live_checks.py` **has now been run** against a real test account. It got as far as
+the credential and product-access probe and stopped there: Subscriptions is not enabled (see #10).
+Re-run `grace day1` once the account activates. It answers:
 
 1. Does `resume` keep the original cycle date or reschedule? (decides whether pause+resume can
    emulate a date shift on UPI/eMandate)
@@ -136,3 +208,4 @@ verified against a fake SDK (`tests/test_gemini_adjudicator.py`, 22 tests); the 
 quality is unmeasured. `grace check-llm` proves the path in a single call — run it first.
 - `2026-09-04 08:10 UTC` Day-1 live checks SKIPPED: no RAZORPAY_KEY_ID in the environment.
 - `2026-09-04 08:10 UTC` Day-1 live checks SKIPPED: no RAZORPAY_KEY_ID in the environment.
+- `2026-09-04 11:07 UTC` Day-1 check `subscriptions API enabled`: FAIL - Subscriptions is NOT enabled on this account. The same key reads /payments fine (200) but /plans returns 401. Razorpay gates the Subscriptions API behind full account activation (KYC), which takes 24-48h. Everything else in Grace runs on the simulator meanwhile.

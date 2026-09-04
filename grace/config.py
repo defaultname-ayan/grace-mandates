@@ -3,6 +3,31 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from pathlib import Path
+
+
+def _load_dotenv() -> None:
+    """Load .env into the environment if present.
+
+    Hand-rolled rather than adding python-dotenv: the offline path is meant to
+    install with three dependencies. Existing environment variables always win,
+    so an explicit `export` overrides the file.
+    """
+    for candidate in (Path.cwd() / ".env", Path(__file__).resolve().parents[1] / ".env"):
+        if not candidate.is_file():
+            continue
+        for raw in candidate.read_text().splitlines():
+            line = raw.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, val = line.partition("=")
+            key, val = key.strip(), val.strip().strip('"').strip("'")
+            if key and val and key not in os.environ:
+                os.environ[key] = val
+        return
+
+
+_load_dotenv()
 
 
 def _f(name: str, default: float) -> float:

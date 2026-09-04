@@ -31,11 +31,46 @@ from grace.models import Evidence
 
 DEFAULT_MODEL = "gemini-3.8-flash"
 
+#: Ordered fallback chain. The free tier returns `503 UNAVAILABLE - this model
+#: is currently experiencing high demand` unpredictably, and no amount of
+#: backoff fixes an overloaded model. Rather than fail the mandate (which would
+#: escalate it and quietly depress the measured result), Grace re-tries the same
+#: evidence on the next model down. Every decision records which model actually
+#: served it, and the batch summary reports the distribution -- a run served
+#: mostly by the last model in the chain is a different experiment, and the
+#: report must not hide that.
+#: The lite models sit at the end deliberately: on the free tier the flash
+#: models share a daily quota that a single full batch exhausts, after which
+#: they return 429 RESOURCE_EXHAUSTED while the lite models still serve. A run
+#: that falls through to lite is a weaker experiment, which is exactly why
+#: `served_by` is reported rather than assumed.
+DEFAULT_FALLBACK_CHAIN = [
+    "gemini-3.8-flash",
+    "gemini-3.7-flash",
+    "gemini-3.5-flash",
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
+
 #: Grace's effort vocabulary -> Gemini's thinking_level.
 EFFORT_TO_THINKING_LEVEL = {
     "minimal": "minimal", "low": "low", "medium": "medium",
     "high": "high", "xhigh": "high", "max": "high",
 }
+
+#: `thinking_level` is a Gemini 3 parameter. The 2.x family rejects it with
+#: `400 INVALID_ARGUMENT: Thinking level is not supported`, so it must only be
+#: sent to models that understand it. Verified live against gemini-2.5-flash.
+def supports_thinking_level(model: str) -> bool:
+    m = (model or "").lower().removeprefix("models/")
+    if not m.startswith("gemini-"):
+        return False
+    ver = m[len("gemini-"):].split("-", 1)[0]
+    try:
+        return float(ver) >= 3.0
+    except ValueError:
+        return False
+
 
 #: finish_reason values that mean the model declined, not that it failed.
 REFUSAL_FINISH_REASONS = {
@@ -77,7 +112,12 @@ class GeminiAdjudicator:
                 "Create one at https://aistudio.google.com/apikey"
             )
         self.client = genai.Client(api_key=key)
-        self.model = model or os.getenv("GRACE_MODEL", DEFAULT_MODEL)
+        self.model = model or os.getenv("GRACE_MODEL") or DEFAULT_MODEL
+        chain_env = os.getenv("GRACE_MODEL_FALLBACKS")
+        chain = ([m.strip() for m in chain_env.split(",") if m.strip()]
+                 if chain_env else list(DEFAULT_FALLBACK_CHAIN))
+        # The configured model always goes first; the rest follow, de-duplicated.
+        self.model_chain = [self.model] + [m for m in chain if m != self.model]
         eff = (effort or os.getenv("GRACE_EFFORT", "high")).lower()
         self.thinking_level = EFFORT_TO_THINKING_LEVEL.get(eff, "high")
         self.effort = eff
@@ -86,17 +126,32 @@ class GeminiAdjudicator:
         self.metas: list[dict] = []
         self._meta_lock = __import__("threading").Lock()
 
-    def _config(self):
+    def _config(self, model: str | None = None):
         from google.genai import types
 
-        return types.GenerateContentConfig(
+        model = model or self.model
+        kwargs = dict(
             system_instruction=SYSTEM,
             response_mime_type="application/json",
             response_schema=Decision,
             max_output_tokens=self.max_output_tokens,
-            thinking_config=types.ThinkingConfig(thinking_level=self.thinking_level),
             # temperature intentionally unset -- see module docstring.
         )
+        if supports_thinking_level(model):
+            kwargs["thinking_config"] = types.ThinkingConfig(thinking_level=self.thinking_level)
+        return types.GenerateContentConfig(**kwargs)
+
+    def _backoff(self, attempt: int) -> float:
+        """Jittered exponential backoff, deliberately short.
+
+        The fallback chain is the real redundancy here: a 503 means this model
+        is overloaded, and waiting rarely fixes that, whereas the next model
+        usually answers immediately. Long per-model backoff just multiplies
+        4 models x N retries into minutes of dead time.
+        """
+        import random
+
+        return min(1.5 * (2**attempt), 10.0) * (0.6 + 0.8 * random.random())
 
     @staticmethod
     def _check_refusal(resp) -> None:
@@ -120,6 +175,21 @@ class GeminiAdjudicator:
         return d
 
     def adjudicate(self, ev: Evidence) -> tuple[Decision, dict]:
+        """Try each model in the chain; within a model, retry transient faults."""
+        last_err: Exception | None = None
+        for depth, model in enumerate(self.model_chain):
+            try:
+                return self._call_one(ev, model, depth)
+            except GeminiRefusal:
+                raise  # a decision, not a fault: do not shop it to another model
+            except AdjudicationError as e:
+                last_err = e
+                continue
+        raise AdjudicationError(
+            f"all {len(self.model_chain)} models in the chain failed; last: {last_err}"
+        )
+
+    def _call_one(self, ev: Evidence, model: str, depth: int) -> tuple[Decision, dict]:
         errors = self._errors
         user = "Evidence for one mandate follows. Decide.\n\n" + format_evidence(ev)
         last_err: Exception | None = None
@@ -128,7 +198,7 @@ class GeminiAdjudicator:
             t0 = time.perf_counter()
             try:
                 resp = self.client.models.generate_content(
-                    model=self.model, contents=user, config=self._config(),
+                    model=model, contents=user, config=self._config(model),
                 )
                 self._check_refusal(resp)
                 parsed = getattr(resp, "parsed", None)
@@ -146,27 +216,30 @@ class GeminiAdjudicator:
                     "thinking_tokens": getattr(u, "thoughts_token_count", 0) or 0,
                     "cache_read_input_tokens": getattr(u, "cached_content_token_count", 0) or 0,
                     "request_id": getattr(resp, "response_id", None),
-                    "model": self.model, "effort": self.effort,
-                    "thinking_level": self.thinking_level,
+                    "model": model,
+                    "requested_model": self.model,
+                    "fallback_depth": depth,
+                    "effort": self.effort,
+                    "thinking_level": self.thinking_level if supports_thinking_level(model) else None,
                     "attempt": attempt, "adjudicator": self.name,
                 }
                 return parsed.clamped(), meta
 
             except GeminiRefusal:
-                raise  # a decision, not a fault: never retry it
+                raise
             except errors.ServerError as e:
-                last_err = e
-                time.sleep(min(2**attempt, 8))
+                last_err = e  # 503 "high demand" is the common one on free tier
+                time.sleep(self._backoff(attempt))
             except errors.ClientError as e:
                 last_err = e
                 if getattr(e, "code", None) == 429:
-                    time.sleep(min(2**attempt, 8))
+                    time.sleep(self._backoff(attempt))
                 else:
                     raise AdjudicationError(f"{getattr(e, 'code', '?')}: {e}") from e
             except AdjudicationError:
                 raise
             except Exception as e:  # transport/DNS/timeout
                 last_err = e
-                time.sleep(min(2**attempt, 8))
+                time.sleep(self._backoff(attempt))
 
-        raise AdjudicationError(f"exhausted retries: {last_err}")
+        raise AdjudicationError(f"{model}: exhausted retries: {last_err}")

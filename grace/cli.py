@@ -76,6 +76,14 @@ def run_batch_cmd(
     effort: str = typer.Option(None, help="Claude effort for --online (default GRACE_BATCH_EFFORT)."),
     limit: int = typer.Option(None, help="Only process the first N mandates."),
     arms: str = typer.Option("noop,baseline,agent", help="Comma-separated arms to run."),
+    holdout_only: bool = typer.Option(False, "--holdout-only",
+                                      help="Only adjudicate holdout mandates. Every reported "
+                                           "metric is holdout-only, so this changes no number "
+                                           "and cuts paid calls by ~70%."),
+    workers: int = typer.Option(None, help="Concurrent adjudications for --online."),
+    sample: int = typer.Option(None, help="Adjudicate only N deterministically-chosen triggered "
+                                          "holdout mandates. For --online runs where provider "
+                                          "quota makes a full batch impractical."),
 ) -> None:
     """Run the decision loop for each arm against its own copy of the cohort."""
     from grace.evaluation.run import run_all
@@ -111,8 +119,9 @@ def run_batch_cmd(
             typer.echo(f"  [{arm}] adjudicated {i}/{total}")
 
     summaries = run_all(rd, decision_date=DEFAULT_DECISION_DATE, offline=offline,
-                        guard_enabled=guard, effort=effort, limit=limit, arms=arm_tuple,
-                        on_progress=progress)
+                        guard_enabled=guard, effort=effort, limit=limit,
+                        holdout_only=holdout_only, sample=sample, arms=arm_tuple,
+                        max_workers=workers, on_progress=progress)
 
     for arm, s in summaries.items():
         typer.secho(f"\n{arm}  ({s['adjudicator']})", fg="green", bold=True)
@@ -134,13 +143,37 @@ def run_batch_cmd(
 def eval_cmd(
     run: str = typer.Option("demo"),
     arms: str = typer.Option("noop,baseline,agent"),
+    on_sample: bool = typer.Option(False, "--on-sample",
+                                   help="Score every arm on the sampled subset recorded by the "
+                                        "last --sample run, so the comparison stays paired."),
 ) -> None:
     """Score the holdout and write eval.json."""
+
     from grace.evaluation.run import score
+    from grace.orchestrator import arm_db_path
+    from grace.store import Store as _Store
 
     rd = _run_dir(run)
     arm_tuple = tuple(a.strip() for a in arms.split(",") if a.strip())
-    payload = score(rd, arm_tuple)
+    restrict = None
+    if on_sample:
+        for a in arm_tuple:
+            db = arm_db_path(rd, a)
+            if not db.exists():
+                continue
+            st = _Store(db)
+            try:
+                ids = (st.get_meta(f"summary_{a}", {}) or {}).get("sampled_ids")
+            finally:
+                st.close()
+            if ids:
+                restrict = set(ids)
+                typer.secho(f"Scoring all arms on the {len(restrict)}-mandate sample "
+                            f"recorded by arm '{a}'.", fg="cyan")
+                break
+        if restrict is None:
+            typer.secho("No --sample run found; scoring the full holdout.", fg="yellow")
+    payload = score(rd, arm_tuple, restrict_to=restrict)
     res = payload["arms"]
     if not res:
         typer.secho("No arm results. Run `grace run-batch` first.", fg="red")
@@ -353,6 +386,7 @@ def check_llm(
     run: str = typer.Option("demo"),
     mandate_id: str = typer.Option(None, help="Which mandate to adjudicate (default: first at-risk)."),
     effort: str = typer.Option(None, help="minimal | low | medium | high."),
+    model: str = typer.Option(None, help="Pin a specific model instead of the chain default."),
 ) -> None:
     """One real LLM call on one mandate. The cheapest way to prove the online path."""
 
@@ -407,8 +441,10 @@ def check_llm(
     finally:
         s.close()
 
-    adj = make_llm_adjudicator(effort=effort)
-    typer.secho(f"Calling {adj.name}:{adj.model} (effort={adj.effort}) on {target.id}...", fg="cyan")
+    adj = make_llm_adjudicator(effort=effort, model=model)
+    chain = getattr(adj, "model_chain", [adj.model])
+    typer.secho(f"Calling {adj.name} (effort={adj.effort}) on {target.id}", fg="cyan")
+    typer.secho(f"  chain: {' -> '.join(chain)}", fg="cyan")
     d = adj.decide(ev)
     meta = adj.metas[-1] if adj.metas else {}
 
@@ -421,10 +457,14 @@ def check_llm(
     if d.customer_message:
         _echo_kv("to customer", d.customer_message)
     typer.secho("\nCall", fg="green", bold=True)
-    for k in ("model", "thinking_level", "input_tokens", "output_tokens",
-              "thinking_tokens", "cache_read_input_tokens", "latency_ms", "request_id"):
+    for k in ("model", "requested_model", "fallback_depth", "thinking_level",
+              "input_tokens", "output_tokens", "thinking_tokens",
+              "cache_read_input_tokens", "latency_ms", "request_id"):
         if k in meta:
             _echo_kv(k, meta[k])
+    if meta.get("fallback_depth"):
+        typer.secho(f"  NOTE: {meta['requested_model']} was unavailable; served by "
+                    f"{meta['model']}.", fg="yellow")
     if t:
         typer.secho(f"\n(ground truth for this mandate: {t.cause.value}, "
                     f"at_risk={t.will_fail})", fg="yellow")

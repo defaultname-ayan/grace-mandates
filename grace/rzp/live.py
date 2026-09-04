@@ -19,6 +19,43 @@ class RailNotSupported(RuntimeError):
     pass
 
 
+class SubscriptionsNotEnabled(RuntimeError):
+    """The Subscriptions API returns 401 on an unactivated account.
+
+    Verified live on a fresh test account: /payments, /orders, /invoices and
+    /settlements all return 200 with the same key, while /plans and
+    /subscriptions return 401 for both reads and writes. The credentials are
+    fine; the product is not enabled. Razorpay gates Subscriptions behind full
+    account activation (KYC), which takes 24-48h and cannot be self-served.
+    """
+
+
+def subscriptions_enabled(client) -> tuple[bool, str]:
+    """Probe before doing anything else, so a 401 is diagnosed rather than
+    surfacing as an opaque ServerError three calls later."""
+    import requests
+
+    key = os.getenv("RAZORPAY_KEY_ID", "")
+    sec = os.getenv("RAZORPAY_KEY_SECRET", "")
+    try:
+        core = requests.get("https://api.razorpay.com/v1/payments?count=1",
+                            auth=(key, sec), timeout=20)
+        subs = requests.get("https://api.razorpay.com/v1/plans?count=1",
+                            auth=(key, sec), timeout=20)
+    except Exception as e:
+        return False, f"could not reach Razorpay: {e}"
+    if subs.status_code == 200:
+        return True, "ok"
+    if core.status_code == 200 and subs.status_code == 401:
+        return False, (
+            "Subscriptions is NOT enabled on this account. The same key reads "
+            "/payments fine (200) but /plans returns 401. Razorpay gates the "
+            "Subscriptions API behind full account activation (KYC), which takes "
+            "24-48h. Everything else in Grace runs on the simulator meanwhile."
+        )
+    return False, f"core={core.status_code} subscriptions={subs.status_code}"
+
+
 def _client():
     import razorpay  # lazy: the offline path must not need this package
 
@@ -134,6 +171,16 @@ def live_demo(amount_paise: int = 49900, keep: bool = False, wait: int = 0,
         return out
 
     echo("\nRazorpay TEST mode - real API calls")
+
+    ok, why = subscriptions_enabled(c)
+    step("subscriptions API enabled", ok, why)
+    if not ok:
+        out["blocked"] = why
+        echo("\n  Cannot exercise the subscription lifecycle against the live API.")
+        echo("  This is a finding, not a failure: it is recorded in docs/WHAT-BROKE.md")
+        echo("  and is precisely why the simulator exists.")
+        return out
+
     plan = c.create_plan(name="Grace demo", amount_paise=amount_paise)
     step("create plan", True, plan["id"])
     sub = c.create_subscription(plan_id=plan["id"], total_count=12)

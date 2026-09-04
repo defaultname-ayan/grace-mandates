@@ -26,6 +26,7 @@ from grace.signals.bank_health import BankHealth
 from grace.signals.holidays import HolidayCalendar
 from grace.sim.engine import SimEngine
 from grace.store import Store
+from grace.util import stable_unit
 
 SEED_DB = "grace.db"
 
@@ -46,6 +47,14 @@ def prepare_arm_db(run_dir: Path, arm: str) -> Path:
             p.unlink()
     shutil.copy2(src, dst)
     return dst
+
+
+def _tally(values) -> dict[str, int]:
+    out: dict[str, int] = {}
+    for v in values:
+        if v is not None:
+            out[str(v)] = out.get(str(v), 0) + 1
+    return dict(sorted(out.items(), key=lambda kv: -kv[1]))
 
 
 def _noop_decision() -> Decision:
@@ -81,6 +90,8 @@ def run_batch(
     guard_enabled: bool = True,
     max_workers: int = 1,
     limit: int | None = None,
+    holdout_only: bool = False,
+    sample: int | None = None,
     adjudicator_name: str = "none",
     on_progress: Callable[[int, int], None] | None = None,
 ) -> dict:
@@ -115,10 +126,32 @@ def run_batch(
             triggered, trigger = is_decision_trigger(ev, CONFIG.theta_low)
             bundles.append((m, ev, trigger, triggered))
 
+        # Restrict paid adjudication to the mandates the report actually scores.
+        # Every metric is holdout-only, so adjudicating the training split costs
+        # money and changes no reported number. Non-holdout mandates still get a
+        # logged no-op decision, so n_scored stays comparable across arms.
+        scored_ids = store.holdout_ids() if (holdout_only or sample) else None
+
+        # A capped online sample. Free-tier quota makes a full online batch
+        # impractical, so take a DETERMINISTIC subset of the triggered holdout
+        # mandates and record exactly which ones, so every arm can be scored on
+        # the same subset and the comparison stays paired.
+        sampled_ids: set[str] | None = None
+        if sample:
+            eligible = sorted(
+                m.id for m, ev, _, trig in bundles
+                if trig and (scored_ids is None or m.id in scored_ids)
+            )
+            eligible.sort(key=lambda mid: stable_unit("online_sample", mid))
+            sampled_ids = set(eligible[:sample])
+
         # ---- 2. adjudicate (parallel only where it is network-bound)
         decisions: dict[str, Decision] = {}
         fallbacks = 0
-        to_decide = [(m, ev) for m, ev, _, trig in bundles if trig and adjudicator is not None]
+        to_decide = [(m, ev) for m, ev, _, trig in bundles
+                     if trig and adjudicator is not None
+                     and (scored_ids is None or m.id in scored_ids)
+                     and (sampled_ids is None or m.id in sampled_ids)]
 
         def _one(pair):
             m, ev = pair
@@ -145,6 +178,9 @@ def run_batch(
         # ---- 3. gate, execute, audit
         summary = {
             "arm": arm, "run_id": run_id, "adjudicator": adjudicator_name,
+            "holdout_only_adjudication": holdout_only,
+            "sample_size": sample,
+            "sampled_ids": sorted(sampled_ids) if sampled_ids else None,
             "n_mandates": len(mandates), "n_triggered": sum(1 for *_, t in bundles if t),
             "adjudicator_fallbacks": fallbacks, "guard_enabled": guard_enabled,
             "actions": {}, "flags": {}, "triggers": {}, "executed": 0, "execution_errors": 0,
@@ -234,7 +270,14 @@ def run_batch(
                 "output_tokens": sum(x.get("output_tokens", 0) for x in metas),
                 "cache_read_input_tokens": sum(x.get("cache_read_input_tokens", 0) for x in metas),
                 "mean_latency_ms": round(sum(x.get("latency_ms", 0) for x in metas) / len(metas)),
-                "model": metas[0].get("model"), "effort": metas[0].get("effort"),
+                "thinking_tokens": sum(x.get("thinking_tokens", 0) for x in metas),
+                "requested_model": metas[0].get("requested_model") or metas[0].get("model"),
+                "effort": metas[0].get("effort"),
+                # Which model actually served each call. A run mostly served by a
+                # fallback model is a different experiment and must not be
+                # reported as a result for the requested model.
+                "served_by": _tally(x.get("model") for x in metas),
+                "fallbacks_used": sum(1 for x in metas if x.get("fallback_depth", 0) > 0),
             }
         store.set_meta(f"summary_{arm}", summary)
         return summary
