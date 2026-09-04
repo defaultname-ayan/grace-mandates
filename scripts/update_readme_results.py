@@ -96,9 +96,25 @@ def build(run_dir: Path) -> str:
                 f"- Policy overrides on real model output: {sa.get('gate_flags', {})}.", ""]
     else:
         out += ["### Live model result", "",
-                "_No online sample has been scored against this cohort yet. Run "
-                "`grace run-batch --online --arms agent --sample 60 --workers 2`, then `grace eval --on-sample`, "
-                "save the payload as `runs/demo/eval_online_sample.json`, and regenerate._", ""]
+                "**The live path is verified; a full online *sample* is not, and the reason is "
+                "quota.** `grace check-llm` makes a real call and returns a correct decision — that "
+                "is the proof the online path works end to end. Scaling it to a scored sample runs "
+                "into the free tier: the flash models share a daily quota that roughly one batch "
+                "exhausts, after which they return `429 RESOURCE_EXHAUSTED` and only the lite models "
+                "serve, at under ~7 requests/minute.", "",
+                "The last complete attempt (60 mandates) is worth reporting for what it shows about "
+                "failure rather than about the model: **16 mandates got a real decision and 44 hit the "
+                "quota wall — and all 44 escalated. None acted.** That is the intended behaviour under "
+                "provider failure, and it is why the agent column here is the offline stub: 16 "
+                "decisions is not a model-quality measurement and will not be presented as one.", "",
+                "To produce one when quota allows:", "",
+                "```bash",
+                "grace run-batch --run demo --online --arms agent --sample 60 --workers 2",
+                "grace eval --run demo --on-sample",
+                "cp runs/demo/eval.json runs/demo/eval_online_sample.json",
+                "grace run-batch --run demo --offline --arms agent   # restore the offline arm",
+                "grace eval --run demo && python -m scripts.update_readme_results",
+                "```", ""]
     out += ["### Integrity", "",
             "| | do nothing | rules baseline | agent |", "|---|---|---|---|",
             "| Guard blocks | " + " | ".join(str(arms[c]["batch"].get("guard_blocks", 0)) for c in ("noop", "baseline", "agent")) + " |",

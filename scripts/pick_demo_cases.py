@@ -57,8 +57,15 @@ def main() -> int:
               if v["trigger"] == "intent" and v["final_action"] == "pause"
               and (agent.get_mandate(k).rail.value == "emandate")])
 
-        show("CASE C - integrity guard blocked a double debit (BASELINE arm)",
-             [(k, v) for k, v in bd.items() if "integrity_blocked" in (v.get("gate_flags") or {})])
+        # The eMandate in-flight block first: "an automatic retry is already
+        # scheduled" is also a guard block, but the double-debit window is the
+        # one worth showing.
+        show("CASE C - guard blocked a charge into the eMandate confirmation window (BASELINE arm)",
+             [(k, v) for k, v in bd.items()
+              if "in flight" in (v.get("gate_flags") or {}).get("integrity_blocked", "")])
+        show("CASE C2 - guard blocked a charge with a retry already scheduled (BASELINE arm)",
+             [(k, v) for k, v in bd.items()
+              if "retry is scheduled" in (v.get("gate_flags") or {}).get("integrity_blocked", "")], n=2)
         print("      ^ use --arm baseline when auditing these")
 
         show("CASE D - escalated rather than guessed",
